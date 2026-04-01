@@ -1,0 +1,75 @@
+# === Type Generation ===
+
+types-routes:
+  uv run python -c 'from datasette_cron.router import router; import json; print(json.dumps(router.openapi_document_json()))' \
+    | npx --prefix frontend openapi-typescript > frontend/api.d.ts
+
+types-pagedata:
+  uv run scripts/typegen-pagedata.py
+  for f in frontend/src/page_data/*_schema.json; do \
+    npx --prefix frontend json2ts "$$f" > "$${f%_schema.json}.types.ts"; \
+  done
+
+types:
+  just types-routes
+  just types-pagedata
+
+types-watch:
+  watchexec -e py --clear -- just types
+
+# === Frontend ===
+
+frontend *flags:
+  npm run build --prefix frontend {{flags}}
+
+frontend-dev *flags:
+  npm run dev --prefix frontend -- --port 5180 {{flags}}
+
+# === Formatting ===
+
+format-backend *flags:
+  uv run ruff format {{flags}}
+
+format-backend-check *flags:
+  uv run ruff format --check {{flags}}
+
+format-frontend *flags:
+  npm run format --prefix frontend {{flags}}
+
+format-frontend-check *flags:
+  npm run format:check --prefix frontend {{flags}}
+
+format:
+  just format-backend
+  just format-frontend
+
+format-check:
+  just format-backend-check
+  just format-frontend-check
+
+# === Type Checking ===
+
+check-backend:
+  uvx ty check
+
+check-frontend:
+  npm run check --prefix frontend
+
+check:
+  just check-backend
+  just check-frontend
+
+# === Testing ===
+
+test *flags:
+  uv run pytest {{flags}}
+
+# === Development ===
+
+dev *flags:
+  DATASETTE_SECRET=abc123 uv run --with datasette-debug-gotham datasette -s permissions.datasette-cron-access.id "*" -p 8010 tmp.db --plugins-dir samples {{flags}}
+
+dev-with-hmr *flags:
+  DATASETTE_CRON_VITE_PATH=http://localhost:5180/ \
+  watchexec --stop-signal SIGKILL -e py,html --ignore '*.db' --restart --clear -- \
+    just dev {{flags}}
