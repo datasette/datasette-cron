@@ -1,6 +1,6 @@
 [project]
 name = "datasette-cron"
-version = "0.1"
+version = "0.0.1a1"
 description = "Scheduled tasks and background jobs for Datasette"
 readme = "README.md"
 authors = [{name = "Alex Garcia"}]
