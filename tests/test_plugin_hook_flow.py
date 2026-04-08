@@ -1,5 +1,6 @@
 """Test the full hook-based flow: handler registered via cron_register_handlers,
 task created in a separate startup hook (exactly like the sample plugin)."""
+
 import asyncio
 
 import pytest
@@ -37,6 +38,7 @@ class SamplePlugin:
                 config={"from": "hook"},
                 overlap="skip",
             )
+
         return inner
 
 
@@ -69,8 +71,8 @@ async def test_task_created_via_startup_hook(ds_with_plugin):
     scheduler = ds_with_plugin._cron_scheduler
     task = await scheduler.internal_db.get_task("test-every-second")
     assert task is not None
-    assert task["handler"] == "test-insert"
-    assert task["enabled"] == 1
+    assert task.handler == "test-insert"
+    assert task.enabled == 1
 
 
 @pytest.mark.asyncio
@@ -91,4 +93,4 @@ async def test_hook_task_runs_recorded(ds_with_plugin):
     runs = await scheduler.internal_db.get_runs("test-every-second")
     assert len(runs) >= 1, f"Expected runs in DB, got {len(runs)}"
     for run in runs:
-        assert run["status"] == "success"
+        assert run.status == "success"

@@ -1,15 +1,19 @@
 from typing import Annotated
 
+from dataclasses import asdict
+
 from datasette import Response
 from datasette_plugin_router import Body
 from pydantic import BaseModel
 
 from ..router import router, require_permission
 from ..internal_db import InternalDB
+from ..models import CronTask
 from ..schedules import schedule_from_db
 
 
 # --- Response Models ---
+
 
 class TaskResponse(BaseModel):
     name: str
@@ -59,6 +63,7 @@ class EnableResponse(BaseModel):
 
 # --- Request Models ---
 
+
 class TriggerRequest(BaseModel):
     pass
 
@@ -69,37 +74,42 @@ class EnableRequest(BaseModel):
 
 # --- Helpers ---
 
-def _task_to_response(task: dict) -> dict:
+
+def _task_to_response(task: CronTask) -> dict:
     try:
-        sched = schedule_from_db(task["schedule_type"], task["schedule_config"], task["timezone"])
+        sched = schedule_from_db(
+            task.schedule_type, task.schedule_config, task.timezone
+        )
         description = sched.describe()
     except Exception:
-        description = f"{task['schedule_type']}: {task['schedule_config']}"
+        description = f"{task.schedule_type}: {task.schedule_config}"
 
     import json
-    config = task["config"]
+
+    config = task.config
     if isinstance(config, str):
         config = json.loads(config)
 
     return {
-        "name": task["name"],
-        "handler": task["handler"],
+        "name": task.name,
+        "handler": task.handler,
         "config": config,
-        "schedule_type": task["schedule_type"],
-        "schedule_config": task["schedule_config"],
+        "schedule_type": task.schedule_type,
+        "schedule_config": task.schedule_config,
         "schedule_description": description,
-        "timezone": task["timezone"],
-        "overlap_policy": task["overlap_policy"],
-        "retry_max": task["retry_max"],
-        "retry_backoff": task["retry_backoff"],
-        "enabled": bool(task["enabled"]),
-        "next_run_at": task["next_run_at"],
-        "last_run_at": task["last_run_at"],
-        "last_status": task["last_status"],
+        "timezone": task.timezone,
+        "overlap_policy": task.overlap_policy,
+        "retry_max": task.retry_max,
+        "retry_backoff": task.retry_backoff,
+        "enabled": bool(task.enabled),
+        "next_run_at": task.next_run_at,
+        "last_run_at": task.last_run_at,
+        "last_status": task.last_status,
     }
 
 
 # --- Routes ---
+
 
 @router.GET(r"/-/api/cron/tasks$", output=TaskListResponse)
 async def api_tasks(datasette, request):
@@ -124,12 +134,14 @@ async def api_task_runs(datasette, request, task_name: str):
     await require_permission(datasette, request)
     db = InternalDB(datasette.get_internal_database())
     runs = await db.get_runs(task_name)
-    return Response.json({"runs": [dict(r) for r in runs]})
+    return Response.json({"runs": [asdict(r) for r in runs]})
 
 
 @router.POST(r"/-/api/cron/tasks/(?P<task_name>[^/]+)/trigger$", output=TriggerResponse)
 async def api_trigger_task(
-    datasette, request, task_name: str,
+    datasette,
+    request,
+    task_name: str,
     body: Annotated[TriggerRequest, Body()],
 ):
     await require_permission(datasette, request)
@@ -143,7 +155,9 @@ async def api_trigger_task(
 
 @router.POST(r"/-/api/cron/tasks/(?P<task_name>[^/]+)/enable$", output=EnableResponse)
 async def api_enable_task(
-    datasette, request, task_name: str,
+    datasette,
+    request,
+    task_name: str,
     body: Annotated[EnableRequest, Body()],
 ):
     await require_permission(datasette, request)

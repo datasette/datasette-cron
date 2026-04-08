@@ -159,7 +159,9 @@ def parse_schedule(schedule, tz_str: str | None = None) -> Schedule:
     raise ValueError(f"Cannot parse schedule: {schedule!r}")
 
 
-def schedule_from_db(schedule_type: str, schedule_config: str, tz_str: str | None = None) -> Schedule:
+def schedule_from_db(
+    schedule_type: str, schedule_config: str, tz_str: str | None = None
+) -> Schedule:
     """Reconstruct a Schedule from DB columns."""
     config = json.loads(schedule_config)
     tz = ZoneInfo(tz_str) if tz_str else None

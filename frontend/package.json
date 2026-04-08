@@ -19,6 +19,7 @@
     "vite": "^7.2.4"
   },
   "dependencies": {
+    "@tsconfig/svelte": "^5.0.8",
     "json-schema-to-typescript": "^15.0.4",
     "openapi-fetch": "^0.17.0",
     "openapi-typescript": "^7.13.0"

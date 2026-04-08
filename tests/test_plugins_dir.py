@@ -1,4 +1,5 @@
 """Test loading the sample plugin exactly as --plugins-dir does it."""
+
 import asyncio
 import os
 import tempfile
@@ -21,9 +22,12 @@ async def ds_plugins_dir():
         internal_path = os.path.join(tmpdir, "internal.db")
 
         import sqlite3
+
         sqlite3.connect(db_path).close()
 
-        samples_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "samples")
+        samples_dir = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "samples"
+        )
         datasette = Datasette(
             [db_path],
             internal=internal_path,
@@ -63,8 +67,8 @@ async def test_task_created_from_plugins_dir(ds_plugins_dir):
     task = await scheduler.internal_db.get_task("debug-insert-every-second")
     print(f"Task: {task}")
     assert task is not None
-    assert task["handler"] == "debug-insert"
-    assert task["enabled"] == 1
+    assert task.handler == "debug-insert"
+    assert task.enabled == 1
 
 
 @pytest.mark.asyncio
@@ -75,7 +79,7 @@ async def test_task_executes_from_plugins_dir(ds_plugins_dir):
     runs = await scheduler.internal_db.get_runs("debug-insert-every-second")
     print(f"Runs after 3s: {len(runs)}")
     for r in runs:
-        print(f"  status={r['status']} error={r.get('error_message')}")
+        print(f"  status={r.status} error={r.error_message}")
     assert len(runs) >= 1, "Expected runs, got none"
 
 

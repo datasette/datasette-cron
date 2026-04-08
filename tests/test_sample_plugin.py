@@ -1,4 +1,5 @@
 """Test that simulates the sample debug plugin pattern."""
+
 import asyncio
 
 import pytest

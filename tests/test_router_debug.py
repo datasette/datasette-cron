@@ -1,4 +1,5 @@
 """Debug tests to isolate the router parameter passing issue."""
+
 import pytest
 import pytest_asyncio
 from datasette.app import Datasette
@@ -6,7 +7,9 @@ from datasette.app import Datasette
 
 @pytest_asyncio.fixture
 async def ds():
-    datasette = Datasette(memory=True, config={"permissions": {"datasette-cron-access": True}})
+    datasette = Datasette(
+        memory=True, config={"permissions": {"datasette-cron-access": True}}
+    )
     await datasette.invoke_startup()
     scheduler = datasette._cron_scheduler
 

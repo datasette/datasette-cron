@@ -1,4 +1,5 @@
 """Test with a persistent internal DB file, simulating `just dev` with internal.db."""
+
 import asyncio
 import os
 import tempfile
@@ -34,6 +35,7 @@ class PersistentTestPlugin:
                 config={},
                 overlap="skip",
             )
+
         return inner
 
 
@@ -48,6 +50,7 @@ async def ds_persistent():
 
             # Create the db file so Datasette finds it
             import sqlite3
+
             sqlite3.connect(db_path).close()
 
             datasette = Datasette(
@@ -68,9 +71,9 @@ async def test_persistent_task_registered(ds_persistent):
     scheduler = ds_persistent._cron_scheduler
     task = await scheduler.internal_db.get_task("persistent-task")
     assert task is not None
-    assert task["handler"] == "persistent-handler"
-    assert task["enabled"] == 1
-    assert task["next_run_at"] is not None
+    assert task.handler == "persistent-handler"
+    assert task.enabled == 1
+    assert task.next_run_at is not None
 
 
 @pytest.mark.asyncio
@@ -101,4 +104,4 @@ async def test_persistent_task_multiple_runs(ds_persistent):
     runs = await scheduler.internal_db.get_runs("persistent-task")
     assert len(runs) >= 3
     for run in runs:
-        assert run["status"] == "success", f"Run failed: {run}"
+        assert run.status == "success", f"Run failed: {run}"

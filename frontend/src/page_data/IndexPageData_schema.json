@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "TaskSummary": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "handler": {
+          "title": "Handler",
+          "type": "string"
+        },
+        "schedule_type": {
+          "title": "Schedule Type",
+          "type": "string"
+        },
+        "schedule_description": {
+          "title": "Schedule Description",
+          "type": "string"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "next_run_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next Run At"
+        },
+        "last_run_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Run At"
+        },
+        "last_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Status"
+        }
+      },
+      "required": [
+        "name",
+        "handler",
+        "schedule_type",
+        "schedule_description",
+        "timezone",
+        "enabled",
+        "next_run_at",
+        "last_run_at",
+        "last_status"
+      ],
+      "title": "TaskSummary",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "tasks": {
+      "items": {
+        "$ref": "#/$defs/TaskSummary"
+      },
+      "title": "Tasks",
+      "type": "array"
+    },
+    "handlers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Handlers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "tasks",
+    "handlers"
+  ],
+  "title": "IndexPageData",
+  "type": "object"
+}

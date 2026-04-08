@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from .models import CronRun, CronTask
+
 
 class InternalDB:
     def __init__(self, internal_db):
@@ -52,13 +54,23 @@ class InternalDB:
                     next_run_at,
                 ],
             )
+
         await self.db.execute_write_fn(write)
 
     async def update_task(self, name: str, **kwargs) -> None:
         allowed = {
-            "handler", "config", "schedule_type", "schedule_config",
-            "timezone", "overlap_policy", "retry_max", "retry_backoff",
-            "enabled", "next_run_at",
+            "handler",
+            "config",
+            "schedule_type",
+            "schedule_config",
+            "timezone",
+            "overlap_policy",
+            "retry_max",
+            "retry_backoff",
+            "enabled",
+            "next_run_at",
+            "last_run_at",
+            "last_status",
         }
         sets = []
         params = []
@@ -77,27 +89,37 @@ class InternalDB:
                 f"UPDATE datasette_cron_tasks SET {', '.join(sets)} WHERE name = ?",
                 params,
             )
+
         await self.db.execute_write_fn(write)
 
     async def delete_task(self, name: str) -> None:
         def write(conn):
             conn.execute("DELETE FROM datasette_cron_tasks WHERE name = ?", [name])
+
         await self.db.execute_write_fn(write)
 
-    async def get_task(self, name: str) -> dict | None:
+    def _row_to_task(self, row) -> CronTask:
+        d = dict(row)
+        return CronTask(**d)
+
+    def _row_to_run(self, row) -> CronRun:
+        d = dict(row)
+        return CronRun(**d)
+
+    async def get_task(self, name: str) -> CronTask | None:
         result = await self.db.execute(
             "SELECT * FROM datasette_cron_tasks WHERE name = ?", [name]
         )
         row = result.first()
-        return dict(row) if row else None
+        return self._row_to_task(row) if row else None
 
-    async def get_all_tasks(self) -> list[dict]:
+    async def get_all_tasks(self) -> list[CronTask]:
         result = await self.db.execute(
             "SELECT * FROM datasette_cron_tasks ORDER BY name"
         )
-        return [dict(r) for r in result.rows]
+        return [self._row_to_task(r) for r in result.rows]
 
-    async def get_due_tasks(self) -> list[dict]:
+    async def get_due_tasks(self) -> list[CronTask]:
         result = await self.db.execute(
             """
             SELECT * FROM datasette_cron_tasks
@@ -106,9 +128,11 @@ class InternalDB:
             ORDER BY next_run_at
             """,
         )
-        return [dict(r) for r in result.rows]
+        return [self._row_to_task(r) for r in result.rows]
 
-    async def update_next_run(self, name: str, next_run_at: str, last_status: str | None = None) -> None:
+    async def update_next_run(
+        self, name: str, next_run_at: str, last_status: str | None = None
+    ) -> None:
         def write(conn):
             if last_status:
                 conn.execute(
@@ -125,6 +149,7 @@ class InternalDB:
                     WHERE name = ?""",
                     [next_run_at, name],
                 )
+
         await self.db.execute_write_fn(write)
 
     async def record_run_start(self, task_name: str, attempt: int = 1) -> int:
@@ -135,6 +160,7 @@ class InternalDB:
                 [task_name, attempt],
             )
             return cursor.lastrowid
+
         return await self.db.execute_write_fn(write)
 
     async def record_run_success(self, run_id: int, duration_ms: int) -> None:
@@ -146,9 +172,12 @@ class InternalDB:
                 WHERE id = ?""",
                 [duration_ms, run_id],
             )
+
         await self.db.execute_write_fn(write)
 
-    async def record_run_error(self, run_id: int, error_message: str, duration_ms: int) -> None:
+    async def record_run_error(
+        self, run_id: int, error_message: str, duration_ms: int
+    ) -> None:
         def write(conn):
             conn.execute(
                 """UPDATE datasette_cron_runs
@@ -157,9 +186,12 @@ class InternalDB:
                 WHERE id = ?""",
                 [error_message, duration_ms, run_id],
             )
+
         await self.db.execute_write_fn(write)
 
-    async def get_runs(self, task_name: str, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def get_runs(
+        self, task_name: str, limit: int = 50, offset: int = 0
+    ) -> list[CronRun]:
         result = await self.db.execute(
             """SELECT * FROM datasette_cron_runs
             WHERE task_name = ?
@@ -167,13 +199,13 @@ class InternalDB:
             LIMIT ? OFFSET ?""",
             [task_name, limit, offset],
         )
-        return [dict(r) for r in result.rows]
+        return [self._row_to_run(r) for r in result.rows]
 
-    async def get_all_runs(self, limit: int = 50, offset: int = 0) -> list[dict]:
+    async def get_all_runs(self, limit: int = 50, offset: int = 0) -> list[CronRun]:
         result = await self.db.execute(
             """SELECT * FROM datasette_cron_runs
             ORDER BY started_at DESC
             LIMIT ? OFFSET ?""",
             [limit, offset],
         )
-        return [dict(r) for r in result.rows]
+        return [self._row_to_run(r) for r in result.rows]

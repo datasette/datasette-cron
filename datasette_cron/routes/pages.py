@@ -3,39 +3,42 @@ from datasette import Response
 from ..router import router, require_permission
 from ..page_data import IndexPageData, DetailPageData, TaskSummary, RunSummary
 from ..internal_db import InternalDB
+from ..models import CronRun, CronTask
 from ..schedules import schedule_from_db
 
 
-def _task_to_summary(task: dict) -> TaskSummary:
+def _task_to_summary(task: CronTask) -> TaskSummary:
     try:
-        sched = schedule_from_db(task["schedule_type"], task["schedule_config"], task["timezone"])
+        sched = schedule_from_db(
+            task.schedule_type, task.schedule_config, task.timezone
+        )
         description = sched.describe()
     except Exception:
-        description = f"{task['schedule_type']}: {task['schedule_config']}"
+        description = f"{task.schedule_type}: {task.schedule_config}"
 
     return TaskSummary(
-        name=task["name"],
-        handler=task["handler"],
-        schedule_type=task["schedule_type"],
+        name=task.name,
+        handler=task.handler,
+        schedule_type=task.schedule_type,
         schedule_description=description,
-        timezone=task["timezone"],
-        enabled=bool(task["enabled"]),
-        next_run_at=task["next_run_at"],
-        last_run_at=task["last_run_at"],
-        last_status=task["last_status"],
+        timezone=task.timezone,
+        enabled=bool(task.enabled),
+        next_run_at=task.next_run_at,
+        last_run_at=task.last_run_at,
+        last_status=task.last_status,
     )
 
 
-def _run_to_summary(run: dict) -> RunSummary:
+def _run_to_summary(run: CronRun) -> RunSummary:
     return RunSummary(
-        id=run["id"],
-        task_name=run["task_name"],
-        started_at=run["started_at"],
-        finished_at=run.get("finished_at"),
-        status=run["status"],
-        error_message=run.get("error_message"),
-        attempt=run["attempt"],
-        duration_ms=run.get("duration_ms"),
+        id=run.id,
+        task_name=run.task_name,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        status=run.status,
+        error_message=run.error_message,
+        attempt=run.attempt,
+        duration_ms=run.duration_ms,
     )
 
 

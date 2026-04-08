@@ -1,4 +1,5 @@
 """End-to-end tests: register handler, add task, verify it actually executes on schedule."""
+
 import asyncio
 
 import pytest
@@ -60,8 +61,8 @@ async def test_runs_recorded_in_db(ds_with_task):
     scheduler = ds_with_task._cron_scheduler
     runs = await scheduler.internal_db.get_runs("every-second")
     assert len(runs) >= 1, f"Expected runs in DB, got {len(runs)}"
-    assert runs[0]["status"] == "success"
-    assert runs[0]["task_name"] == "every-second"
+    assert runs[0].status == "success"
+    assert runs[0].task_name == "every-second"
 
 
 @pytest.mark.asyncio
@@ -70,7 +71,7 @@ async def test_task_status_updated(ds_with_task):
     await asyncio.sleep(3)
     scheduler = ds_with_task._cron_scheduler
     task = await scheduler.internal_db.get_task("every-second")
-    assert task["last_status"] == "success"
+    assert task.last_status == "success"
 
 
 @pytest.mark.asyncio
@@ -78,10 +79,10 @@ async def test_next_run_at_advances(ds_with_task):
     """next_run_at should advance after each execution."""
     scheduler = ds_with_task._cron_scheduler
     task_before = await scheduler.internal_db.get_task("every-second")
-    next_before = task_before["next_run_at"]
+    next_before = task_before.next_run_at
 
     await asyncio.sleep(2)
 
     task_after = await scheduler.internal_db.get_task("every-second")
-    next_after = task_after["next_run_at"]
+    next_after = task_after.next_run_at
     assert next_after != next_before, "next_run_at should have advanced"

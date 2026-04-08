@@ -1,0 +1,180 @@
+{
+  "$defs": {
+    "RunSummary": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "integer"
+        },
+        "task_name": {
+          "title": "Task Name",
+          "type": "string"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "string"
+        },
+        "finished_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Finished At"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "error_message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error Message"
+        },
+        "attempt": {
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Duration Ms"
+        }
+      },
+      "required": [
+        "id",
+        "task_name",
+        "started_at",
+        "finished_at",
+        "status",
+        "error_message",
+        "attempt",
+        "duration_ms"
+      ],
+      "title": "RunSummary",
+      "type": "object"
+    },
+    "TaskSummary": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "handler": {
+          "title": "Handler",
+          "type": "string"
+        },
+        "schedule_type": {
+          "title": "Schedule Type",
+          "type": "string"
+        },
+        "schedule_description": {
+          "title": "Schedule Description",
+          "type": "string"
+        },
+        "timezone": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Timezone"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "next_run_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Next Run At"
+        },
+        "last_run_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Run At"
+        },
+        "last_status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Status"
+        }
+      },
+      "required": [
+        "name",
+        "handler",
+        "schedule_type",
+        "schedule_description",
+        "timezone",
+        "enabled",
+        "next_run_at",
+        "last_run_at",
+        "last_status"
+      ],
+      "title": "TaskSummary",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "task": {
+      "$ref": "#/$defs/TaskSummary"
+    },
+    "runs": {
+      "items": {
+        "$ref": "#/$defs/RunSummary"
+      },
+      "title": "Runs",
+      "type": "array"
+    },
+    "handlers": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Handlers",
+      "type": "array"
+    }
+  },
+  "required": [
+    "task",
+    "runs",
+    "handlers"
+  ],
+  "title": "DetailPageData",
+  "type": "object"
+}

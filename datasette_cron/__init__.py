@@ -60,6 +60,7 @@ def menu_links(datasette, actor, request):
 @hookimpl(tryfirst=True)
 def startup(datasette):
     """Set up DB schema and scheduler instance so other plugins can add_task in their startup."""
+
     async def inner():
         # Apply migrations
         def migrate(connection):
@@ -73,19 +74,21 @@ def startup(datasette):
         datasette._cron_scheduler = scheduler
 
         # Collect handlers from all plugins
-        for result in pm.hook.cron_register_handlers(datasette=datasette):
-            if result and isinstance(result, dict):
-                plugin_name = "unknown"
-                for plugin in pm.get_plugins():
-                    module = getattr(plugin, "__name__", "") or getattr(plugin, "__module__", "")
-                    if hasattr(plugin, "cron_register_handlers"):
-                        try:
-                            if plugin.cron_register_handlers(datasette=datasette) is result:
-                                plugin_name = module.replace("datasette_", "").split(".")[0]
-                                break
-                        except Exception:
-                            pass
-                scheduler.register_handlers(plugin_name, result)
+        # Use pluggy's caller info to determine plugin names
+        hook_callers = pm.parse_hookimpl_opts
+        for plugin in pm.get_plugins():
+            if not hasattr(plugin, "cron_register_handlers"):
+                continue
+            module = getattr(plugin, "__name__", "") or getattr(
+                plugin, "__module__", ""
+            )
+            plugin_name = module.replace("datasette_", "").split(".")[0] or "unknown"
+            try:
+                result = plugin.cron_register_handlers(datasette=datasette)
+                if result and isinstance(result, dict):
+                    scheduler.register_handlers(plugin_name, result)
+            except Exception:
+                pass
 
     return inner
 
@@ -99,6 +102,7 @@ def asgi_wrapper(datasette):
             nonlocal _scheduler_started
 
             if scope["type"] == "lifespan":
+
                 async def wrapped_receive():
                     message = await receive()
                     if message["type"] == "lifespan.shutdown":

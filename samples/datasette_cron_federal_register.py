@@ -27,7 +27,9 @@ async def fetch_federal_register(datasette, config):
 
     if backfill:
         # Fetch documents from the past 24 hours
-        yesterday = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%m/%d/%Y")
+        yesterday = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime(
+            "%m/%d/%Y"
+        )
         params["conditions[publication_date][gte]"] = yesterday
 
     async with httpx.AsyncClient() as client:
