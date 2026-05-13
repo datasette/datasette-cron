@@ -259,11 +259,7 @@ class Scheduler:
                         await result
                     duration_ms = int((time.monotonic() - start_time) * 1000)
                     await self.internal_db.record_run_success(run_id, duration_ms)
-                    await self.internal_db.update_next_run(
-                        name,
-                        (await self._get_next_run_at(task)).isoformat(),
-                        last_status="success",
-                    )
+                    await self.internal_db.mark_last_run(name, "success")
                     return
                 except asyncio.CancelledError:
                     duration_ms = int((time.monotonic() - start_time) * 1000)
@@ -288,20 +284,9 @@ class Scheduler:
                         logger.error(
                             "Task %r failed after %d attempts", name, max_attempts
                         )
-                        await self.internal_db.update_next_run(
-                            name,
-                            (await self._get_next_run_at(task)).isoformat(),
-                            last_status="error",
-                        )
+                        await self.internal_db.mark_last_run(name, "error")
         finally:
             self._running_tasks.pop(name, None)
-
-    async def _get_next_run_at(self, task: CronTask) -> datetime:
-        now = _utcnow()
-        sched = schedule_from_db(
-            task.schedule_type, task.schedule_config, task.timezone
-        )
-        return add_jitter(sched.next_run(now), sched)
 
     async def _compute_sleep(self) -> float:
         tasks = await self.internal_db.get_all_tasks()

@@ -130,25 +130,33 @@ class InternalDB:
         )
         return [self._row_to_task(r) for r in result.rows]
 
-    async def update_next_run(
-        self, name: str, next_run_at: str, last_status: str | None = None
-    ) -> None:
+    async def update_next_run(self, name: str, next_run_at: str) -> None:
         def write(conn):
-            if last_status:
-                conn.execute(
-                    """UPDATE datasette_cron_tasks
-                    SET next_run_at = ?, last_run_at = strftime('%Y-%m-%dT%H:%M:%f', 'now'),
-                        last_status = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
-                    WHERE name = ?""",
-                    [next_run_at, last_status, name],
-                )
-            else:
-                conn.execute(
-                    """UPDATE datasette_cron_tasks
-                    SET next_run_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
-                    WHERE name = ?""",
-                    [next_run_at, name],
-                )
+            conn.execute(
+                """UPDATE datasette_cron_tasks
+                SET next_run_at = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
+                WHERE name = ?""",
+                [next_run_at, name],
+            )
+
+        await self.db.execute_write_fn(write)
+
+    async def mark_last_run(self, name: str, status: str) -> None:
+        """Record the outcome of a completed run on the task row.
+
+        Does not touch next_run_at — that's owned by the scheduler tick so
+        runtime can't drift the schedule.
+        """
+
+        def write(conn):
+            conn.execute(
+                """UPDATE datasette_cron_tasks
+                SET last_run_at = strftime('%Y-%m-%dT%H:%M:%f', 'now'),
+                    last_status = ?,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
+                WHERE name = ?""",
+                [status, name],
+            )
 
         await self.db.execute_write_fn(write)
 

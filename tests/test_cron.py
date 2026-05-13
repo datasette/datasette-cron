@@ -831,6 +831,77 @@ async def test_task_with_past_next_run_at_is_due():
 
 
 @pytest.mark.asyncio
+async def test_execute_task_does_not_modify_next_run_at():
+    """Regression: handler runtime must not drift the schedule.
+
+    Before the fix, _execute_task wrote next_run_at on completion using the
+    execution-end time, so an N-second interval task whose handler took H
+    seconds effectively ran every N+H seconds. The contract is now:
+    _execute_task only updates last_run_at / last_status; next_run_at is
+    owned by _tick.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    async def slow_handler(datasette, config):
+        # Simulate real wall-clock work so the bug would manifest if present.
+        await asyncio.sleep(0.5)
+
+    scheduler.register_handlers("test", {"slow": slow_handler})
+
+    await scheduler.add_task(
+        name="drift-check",
+        handler="test:slow",
+        schedule={"interval": 60},
+    )
+
+    task_before = await scheduler.internal_db.get_task("drift-check")
+    next_run_before = task_before.next_run_at
+
+    # Trigger a run and wait for it to finish.
+    await scheduler.trigger_task("drift-check")
+    await asyncio.sleep(1.0)
+
+    task_after = await scheduler.internal_db.get_task("drift-check")
+    assert task_after.next_run_at == next_run_before, (
+        f"next_run_at drifted: {next_run_before} -> {task_after.next_run_at}"
+    )
+    # But last_status / last_run_at must have been updated.
+    assert task_after.last_status == "success"
+    assert task_after.last_run_at is not None
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_execute_task_failure_records_status_without_advancing_next_run():
+    """Same contract for the error path."""
+    ds, scheduler = await _make_scheduler()
+
+    async def failing_handler(datasette, config):
+        raise RuntimeError("boom")
+
+    scheduler.register_handlers("test", {"fail": failing_handler})
+
+    await scheduler.add_task(
+        name="fail-no-drift",
+        handler="test:fail",
+        schedule={"interval": 60},
+    )
+
+    task_before = await scheduler.internal_db.get_task("fail-no-drift")
+    next_run_before = task_before.next_run_at
+
+    await scheduler.trigger_task("fail-no-drift")
+    await asyncio.sleep(0.5)
+
+    task_after = await scheduler.internal_db.get_task("fail-no-drift")
+    assert task_after.next_run_at == next_run_before
+    assert task_after.last_status == "error"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handler_called_with_correct_config():
     """When a task fires, the handler must receive the exact config dict from add_task."""
     ds, scheduler = await _make_scheduler()
