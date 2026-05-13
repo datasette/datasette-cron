@@ -210,6 +210,19 @@ Stored in Datasette's internal database:
 
 **`datasette_cron_runs`** — execution history with timing, status, and errors
 
+## Deployment
+
+> [!WARNING]
+> **Run datasette-cron as a single process.** Each worker process spins up
+> its own scheduler and independently fires due tasks — there is no leader
+> election or row-level claim yet. Running under `uvicorn --workers N`,
+> `gunicorn -w N`, or any multi-process container will cause every task to
+> fire N times per scheduled slot.
+>
+> Stick to one worker per deployment (`uvicorn --workers 1`, which is also
+> the default for `datasette serve`). Multi-worker safety is tracked as
+> future work.
+
 ## Development
 
 ```bash
