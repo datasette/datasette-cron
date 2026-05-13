@@ -1,5 +1,3 @@
-import os
-
 from datasette import hookimpl
 from datasette.permissions import Action
 from datasette.plugins import pm
@@ -34,7 +32,6 @@ def extra_template_vars(datasette):
     entry = vite_entry(
         datasette=datasette,
         plugin_package="datasette_cron",
-        vite_dev_path=os.environ.get("DATASETTE_CRON_VITE_PATH"),
     )
     return {"datasette_cron_vite_entry": entry}
 

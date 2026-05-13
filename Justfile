@@ -70,6 +70,5 @@ dev *flags:
   DATASETTE_SECRET=abc123 uv run --with datasette-debug-gotham datasette -s permissions.datasette-cron-access.id "*" -p 8010 tmp.db --plugins-dir samples {{flags}}
 
 dev-with-hmr *flags:
-  DATASETTE_CRON_VITE_PATH=http://localhost:5180/ \
   watchexec --stop-signal SIGKILL -e py,html --ignore '*.db' --restart --clear -- \
-    just dev {{flags}}
+    just dev -s plugins.datasette-vite.dev_ports.datasette_cron 5180 {{flags}}
