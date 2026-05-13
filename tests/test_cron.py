@@ -831,6 +831,127 @@ async def test_task_with_past_next_run_at_is_due():
 
 
 @pytest.mark.asyncio
+async def test_trigger_force_runs_through_overlap_skip():
+    """Manual trigger must fire even when a run is in flight with overlap=skip.
+
+    The user clicked "Run now" — they explicitly want a run, regardless of
+    policy. Concurrent execution is tracked and visible in the runs table.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    in_handler = asyncio.Event()
+    release = asyncio.Event()
+    call_count = 0
+
+    async def slow_handler(datasette, config):
+        nonlocal call_count
+        call_count += 1
+        in_handler.set()
+        await release.wait()
+
+    scheduler.register_handlers("test", {"slow": slow_handler})
+    await scheduler.add_task(
+        name="force-trigger",
+        handler="test:slow",
+        schedule={"interval": 99999},
+        overlap="skip",
+    )
+
+    # First trigger starts running and blocks on the release event.
+    await scheduler.trigger_task("force-trigger")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+    assert call_count == 1
+    in_handler.clear()
+
+    # Second trigger while the first is still running -- must force-run.
+    await scheduler.trigger_task("force-trigger")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+    assert call_count == 2, "Manual trigger should ignore overlap=skip"
+
+    # Two in-flight runs should be tracked.
+    assert scheduler.is_running("force-trigger")
+    assert len(scheduler._running_tasks["force-trigger"]) == 2
+
+    release.set()
+    await asyncio.sleep(0.2)
+    assert not scheduler.is_running("force-trigger")
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_respects_overlap_skip():
+    """Scheduled fires (via _tick) must still skip when a run is in flight."""
+    ds, scheduler = await _make_scheduler()
+
+    in_handler = asyncio.Event()
+    release = asyncio.Event()
+    call_count = 0
+
+    async def slow_handler(datasette, config):
+        nonlocal call_count
+        call_count += 1
+        in_handler.set()
+        await release.wait()
+
+    scheduler.register_handlers("test", {"slow": slow_handler})
+    await scheduler.add_task(
+        name="tick-skip",
+        handler="test:slow",
+        schedule={"interval": 99999},
+        overlap="skip",
+    )
+
+    # Kick off a manual run first (force=True path inserts into _running_tasks).
+    await scheduler.trigger_task("tick-skip")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+    assert call_count == 1
+
+    # Force the task to be due, then run a single tick.
+    await scheduler.internal_db.update_next_run("tick-skip", "2000-01-01T00:00:00")
+    await scheduler._tick()
+    await asyncio.sleep(0.1)
+
+    # Scheduled tick must NOT have spawned a second run.
+    assert call_count == 1, "Scheduled fire should skip when overlap=skip"
+
+    release.set()
+    await asyncio.sleep(0.2)
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_cancels_trigger_spawned_runs():
+    """Manual-trigger executions must be cancelled by shutdown."""
+    ds, scheduler = await _make_scheduler()
+
+    in_handler = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def long_handler(datasette, config):
+        in_handler.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    scheduler.register_handlers("test", {"long": long_handler})
+    await scheduler.add_task(
+        name="shutdown-test",
+        handler="test:long",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("shutdown-test")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+    assert scheduler.is_running("shutdown-test")
+
+    await scheduler.shutdown()
+    assert cancelled.is_set(), "Trigger-spawned task must be cancelled on shutdown"
+
+
+@pytest.mark.asyncio
 async def test_execute_task_does_not_modify_next_run_at():
     """Regression: handler runtime must not drift the schedule.
 

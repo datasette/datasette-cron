@@ -29,7 +29,10 @@ class Scheduler:
         self._loop_task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
         self._shutting_down = False
-        self._running_tasks: dict[str, asyncio.Task] = {}
+        # Per-task set of in-flight executions. A manual trigger force-runs
+        # regardless of overlap_policy, so multiple runs of the same task can
+        # coexist; tracking them all here lets shutdown cancel every one.
+        self._running_tasks: dict[str, set[asyncio.Task]] = {}
 
     @property
     def internal_db(self) -> InternalDB:
@@ -59,11 +62,13 @@ class Scheduler:
         self._shutting_down = True
         self._wake_event.set()
 
-        # Cancel all running task executions
-        for name, task in list(self._running_tasks.items()):
-            task.cancel()
+        # Cancel every in-flight execution across all tasks.
+        in_flight = [t for tasks in self._running_tasks.values() for t in tasks]
+        for t in in_flight:
+            t.cancel()
+        for t in in_flight:
             try:
-                await task
+                await t
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -77,6 +82,34 @@ class Scheduler:
 
     def _wake(self) -> None:
         self._wake_event.set()
+
+    def is_running(self, name: str) -> bool:
+        """Return True if the task has any in-flight executions in this process."""
+        return any(not t.done() for t in self._running_tasks.get(name, ()))
+
+    def _spawn_execution(
+        self, task: CronTask, handler_fn: Callable[..., Any], *, force: bool = False
+    ) -> bool:
+        """Spawn _execute_task, respecting overlap_policy unless force=True.
+
+        Returns True if execution started, False if blocked by overlap.
+        Manual triggers pass force=True so the user's "Run now" always fires.
+        """
+        name = task.name
+        running = {t for t in self._running_tasks.get(name, ()) if not t.done()}
+
+        if running and not force:
+            if task.overlap_policy == "skip":
+                return False
+            if task.overlap_policy == "cancel":
+                for t in running:
+                    t.cancel()
+
+        exec_task = asyncio.get_running_loop().create_task(
+            self._execute_task(task, handler_fn)
+        )
+        self._running_tasks.setdefault(name, set()).add(exec_task)
+        return True
 
     # ---- Public Task CRUD API ----
 
@@ -145,20 +178,26 @@ class Scheduler:
 
     async def remove_task(self, name: str) -> None:
         await self.internal_db.delete_task(name)
-        # Cancel if running
-        if name in self._running_tasks:
-            self._running_tasks[name].cancel()
+        # Cancel any in-flight executions for this task.
+        for t in list(self._running_tasks.get(name, ())):
+            t.cancel()
         self._wake()
 
     async def trigger_task(self, name: str) -> None:
-        """Run a task immediately, out of schedule."""
+        """Run a task immediately, out of schedule.
+
+        Manual triggers force-run regardless of overlap_policy — the user
+        explicitly asked for this run, so we honor that even if a scheduled
+        execution is in flight. The concurrent run is tracked and visible
+        in the runs table with status='running'.
+        """
         task = await self.internal_db.get_task(name)
         if not task:
             raise ValueError(f"Task not found: {name}")
         handler_fn = self.get_handler(task.handler)
         if not handler_fn:
             raise ValueError(f"Handler not found: {task.handler}")
-        asyncio.get_event_loop().create_task(self._execute_task(task, handler_fn))
+        self._spawn_execution(task, handler_fn, force=True)
 
     async def enable_task(self, name: str) -> None:
         await self.internal_db.update_task(name, enabled=1)
@@ -214,25 +253,16 @@ class Scheduler:
                 await self.internal_db.update_task(name, enabled=0, last_status="error")
                 continue
 
-            # Check overlap policy
-            if task.overlap_policy == "skip" and name in self._running_tasks:
-                running = self._running_tasks[name]
-                if not running.done():
-                    # Skip this run, advance next_run_at
-                    sched = schedule_from_db(
-                        task.schedule_type, task.schedule_config, task.timezone
-                    )
-                    next_run = add_jitter(sched.next_run(now), sched)
-                    await self.internal_db.update_next_run(name, next_run.isoformat())
-                    continue
+            started = self._spawn_execution(task, handler_fn)
+            if not started:
+                logger.debug(
+                    "Skipped %r: overlap_policy=%s and a run is in flight",
+                    name,
+                    task.overlap_policy,
+                )
 
-            # Schedule execution
-            exec_task = asyncio.get_event_loop().create_task(
-                self._execute_task(task, handler_fn)
-            )
-            self._running_tasks[name] = exec_task
-
-            # Advance next_run_at
+            # Advance next_run_at regardless of whether we spawned — a skipped
+            # run still consumes its scheduling slot.
             sched = schedule_from_db(
                 task.schedule_type, task.schedule_config, task.timezone
             )
@@ -286,7 +316,13 @@ class Scheduler:
                         )
                         await self.internal_db.mark_last_run(name, "error")
         finally:
-            self._running_tasks.pop(name, None)
+            # Remove ourselves from the in-flight set; clean up empty entries.
+            current = asyncio.current_task()
+            running = self._running_tasks.get(name)
+            if running is not None and current is not None:
+                running.discard(current)
+                if not running:
+                    self._running_tasks.pop(name, None)
 
     async def _compute_sleep(self) -> float:
         tasks = await self.internal_db.get_all_tasks()
