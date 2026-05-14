@@ -747,6 +747,81 @@ async def test_scheduler_update_task():
     await scheduler.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_update_task_timezone_recomputes_next_run():
+    """Changing the timezone of a tz-bound cron task must re-derive next_run_at.
+
+    Regression for isqvr0c6: previously the timezone column was updated but
+    next_run_at kept the old tz's UTC offset, so the next fire happened at
+    the wrong wall-clock moment.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": noop})
+
+    # 8am daily in New York.
+    await scheduler.add_task(
+        name="tz-task",
+        handler="test:h",
+        schedule="0 8 * * *",
+        timezone="America/New_York",
+    )
+    t1 = await scheduler.internal_db.get_task("tz-task")
+    next1 = t1.next_run_at
+
+    # Switch to Tokyo. 8am Tokyo is a wildly different UTC moment from 8am NY.
+    await scheduler.update_task("tz-task", timezone="Asia/Tokyo")
+    t2 = await scheduler.internal_db.get_task("tz-task")
+    assert t2.timezone == "Asia/Tokyo"
+    assert t2.next_run_at != next1, (
+        f"next_run_at should be recomputed when timezone changes "
+        f"(was {next1}, still {t2.next_run_at})"
+    )
+
+
+@pytest.mark.asyncio
+async def test_update_task_clear_timezone():
+    """Passing timezone=None removes the timezone binding and recomputes."""
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": noop})
+
+    await scheduler.add_task(
+        name="clear-tz",
+        handler="test:h",
+        schedule="0 8 * * *",
+        timezone="America/New_York",
+    )
+    t1 = await scheduler.internal_db.get_task("clear-tz")
+    assert t1.timezone == "America/New_York"
+
+    await scheduler.update_task("clear-tz", timezone=None)
+    t2 = await scheduler.internal_db.get_task("clear-tz")
+    assert t2.timezone is None
+    # next_run_at must have been recomputed to "8am UTC" rather than "8am NY".
+    assert t2.next_run_at != t1.next_run_at
+
+
+@pytest.mark.asyncio
+async def test_update_task_raises_on_unknown_task():
+    """update_task must raise ValueError if the task does not exist."""
+    ds, scheduler = await _make_scheduler()
+
+    with pytest.raises(ValueError, match="Task not found"):
+        await scheduler.update_task("does-not-exist", config={"x": 1})
+
+    with pytest.raises(ValueError, match="Task not found"):
+        await scheduler.update_task("does-not-exist", enabled=False)
+
+    await scheduler.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # Regression tests for scheduling bugs
 # ---------------------------------------------------------------------------

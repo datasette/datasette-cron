@@ -146,19 +146,32 @@ class Scheduler:
         self._wake()
 
     async def update_task(self, name: str, **kwargs) -> None:
-        updates = {}
-        if "schedule" in kwargs:
-            tz_str = kwargs.get("timezone")
-            # If timezone not provided, look up existing
-            if tz_str is None and "timezone" not in kwargs:
-                existing = await self.internal_db.get_task(name)
-                if existing:
-                    tz_str = existing.timezone
-            sched = parse_schedule(kwargs["schedule"], tz_str=tz_str)
+        existing = await self.internal_db.get_task(name)
+        if not existing:
+            raise ValueError(f"Task not found: {name}")
+
+        updates: dict = {}
+
+        # Schedule or timezone changes require recomputing next_run_at: a
+        # cron-with-tz task's "8am New York" UTC moment shifts when the tz
+        # changes, so we re-derive both schedule_config (in case schedule
+        # changed) and next_run_at together from the resolved (sched, tz) pair.
+        schedule_changed = "schedule" in kwargs
+        timezone_changed = "timezone" in kwargs
+        if schedule_changed or timezone_changed:
+            tz_str = kwargs["timezone"] if timezone_changed else existing.timezone
+            if schedule_changed:
+                sched = parse_schedule(kwargs["schedule"], tz_str=tz_str)
+            else:
+                sched = schedule_from_db(
+                    existing.schedule_type, existing.schedule_config, tz_str
+                )
             updates["schedule_type"] = sched.schedule_type
             updates["schedule_config"] = json.dumps(sched.to_dict())
-            now = _utcnow()
-            updates["next_run_at"] = add_jitter(sched.next_run(now), sched).isoformat()
+            updates["next_run_at"] = add_jitter(
+                sched.next_run(_utcnow()), sched
+            ).isoformat()
+
         if "config" in kwargs:
             updates["config"] = kwargs["config"]
         if "timezone" in kwargs:
