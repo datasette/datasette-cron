@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from ..router import router, require_permission
 from ..internal_db import InternalDB
 from ..models import CronTask
-from ..schedules import schedule_from_db
+from ..schedules import IntervalSchedule, schedule_from_db
 
 
 # --- Response Models ---
@@ -22,6 +22,7 @@ class TaskResponse(BaseModel):
     schedule_type: str
     schedule_config: str
     schedule_description: str
+    schedule_seconds: float | None
     timezone: str | None
     overlap_policy: str
     retry_max: int
@@ -81,8 +82,12 @@ def _task_to_response(task: CronTask) -> dict:
             task.schedule_type, task.schedule_config, task.timezone
         )
         description = sched.describe()
+        schedule_seconds = (
+            sched.seconds if isinstance(sched, IntervalSchedule) else None
+        )
     except Exception:
         description = f"{task.schedule_type}: {task.schedule_config}"
+        schedule_seconds = None
 
     import json
 
@@ -97,6 +102,7 @@ def _task_to_response(task: CronTask) -> dict:
         "schedule_type": task.schedule_type,
         "schedule_config": task.schedule_config,
         "schedule_description": description,
+        "schedule_seconds": schedule_seconds,
         "timezone": task.timezone,
         "overlap_policy": task.overlap_policy,
         "retry_max": task.retry_max,

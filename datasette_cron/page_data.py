@@ -8,6 +8,9 @@ class TaskSummary(BaseModel):
     handler: str
     schedule_type: str
     schedule_description: str
+    # Raw seconds for interval schedules; None otherwise. The frontend uses
+    # this to classify "continuous" (< 10s) without parsing schedule_description.
+    schedule_seconds: float | None
     timezone: str | None
     enabled: bool
     next_run_at: str | None

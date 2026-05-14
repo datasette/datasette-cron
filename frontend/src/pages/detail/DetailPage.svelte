@@ -14,8 +14,8 @@
 
   const continuous = $derived(
     task.schedule_type === "interval"
-      && task.schedule_description.match(/^every [0-9]+s$/) !== null
-      && parseInt(task.schedule_description.replace(/\D/g, "")) < 10
+      && typeof task.schedule_seconds === "number"
+      && task.schedule_seconds < 10
   );
 
   // Tick every 5 seconds
@@ -44,6 +44,7 @@
         handler: data.handler as string,
         schedule_type: data.schedule_type as string,
         schedule_description: data.schedule_description as string,
+        schedule_seconds: data.schedule_seconds as number | null,
         timezone: data.timezone as string | null,
         enabled: data.enabled as boolean,
         next_run_at: data.next_run_at as string | null,

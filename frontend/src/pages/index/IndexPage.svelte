@@ -47,6 +47,7 @@
       handler: apiTask.handler as string,
       schedule_type: apiTask.schedule_type as string,
       schedule_description: apiTask.schedule_description as string,
+      schedule_seconds: apiTask.schedule_seconds as number | null,
       timezone: apiTask.timezone as string | null,
       enabled: apiTask.enabled as boolean,
       next_run_at: apiTask.next_run_at as string | null,
@@ -77,8 +78,9 @@
   }
 
   function isContinuous(task: (typeof tasks)[number]): boolean {
-    return task.schedule_type === "interval" && task.schedule_description.match(/^every [0-9]+s$/) !== null
-      && parseInt(task.schedule_description.replace(/\D/g, "")) < 10;
+    return task.schedule_type === "interval"
+      && typeof task.schedule_seconds === "number"
+      && task.schedule_seconds < 10;
   }
 
   function countdown(iso: string | null): { text: string; className: string } {

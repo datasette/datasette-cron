@@ -65,6 +65,40 @@ async def test_api_trigger_route_exists():
 
 
 @pytest.mark.asyncio
+async def test_api_task_response_includes_schedule_seconds():
+    """API responses expose schedule_seconds for interval tasks (used by the
+    frontend to classify "continuous"), and None for non-interval schedules.
+    """
+    datasette = Datasette(
+        memory=True,
+        config={"permissions": {"datasette-cron-access": True}},
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": handler})
+    await scheduler.add_task(
+        name="every-5s", handler="test:h", schedule={"interval": 5}
+    )
+    await scheduler.add_task(
+        name="daily", handler="test:h", schedule="0 8 * * *"
+    )
+
+    interval_resp = await datasette.client.get("/-/api/cron/tasks/every-5s")
+    assert interval_resp.status_code == 200
+    assert interval_resp.json()["schedule_seconds"] == 5
+
+    cron_resp = await datasette.client.get("/-/api/cron/tasks/daily")
+    assert cron_resp.status_code == 200
+    assert cron_resp.json()["schedule_seconds"] is None
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_api_enable_route_exists():
     datasette = await _setup_datasette_with_task()
     response = await datasette.client.post(

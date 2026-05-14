@@ -149,6 +149,8 @@ export interface paths {
                             schedule_config: string;
                             /** Schedule Description */
                             schedule_description: string;
+                            /** Schedule Seconds */
+                            schedule_seconds: number | null;
                             /** Timezone */
                             timezone: string | null;
                             /** Overlap Policy */
@@ -333,6 +335,8 @@ export interface components {
             schedule_config: string;
             /** Schedule Description */
             schedule_description: string;
+            /** Schedule Seconds */
+            schedule_seconds: number | null;
             /** Timezone */
             timezone: string | null;
             /** Overlap Policy */

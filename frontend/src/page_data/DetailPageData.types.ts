@@ -9,6 +9,7 @@ export type Name = string;
 export type Handler = string;
 export type ScheduleType = string;
 export type ScheduleDescription = string;
+export type ScheduleSeconds = number | null;
 export type Timezone = string | null;
 export type Enabled = boolean;
 export type NextRunAt = string | null;
@@ -36,6 +37,7 @@ export interface TaskSummary {
   handler: Handler;
   schedule_type: ScheduleType;
   schedule_description: ScheduleDescription;
+  schedule_seconds: ScheduleSeconds;
   timezone: Timezone;
   enabled: Enabled;
   next_run_at: NextRunAt;

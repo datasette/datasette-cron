@@ -4,7 +4,7 @@ from ..router import router, require_permission
 from ..page_data import IndexPageData, DetailPageData, TaskSummary, RunSummary
 from ..internal_db import InternalDB
 from ..models import CronRun, CronTask
-from ..schedules import schedule_from_db
+from ..schedules import IntervalSchedule, schedule_from_db
 
 
 def _task_to_summary(task: CronTask) -> TaskSummary:
@@ -13,14 +13,19 @@ def _task_to_summary(task: CronTask) -> TaskSummary:
             task.schedule_type, task.schedule_config, task.timezone
         )
         description = sched.describe()
+        schedule_seconds = (
+            sched.seconds if isinstance(sched, IntervalSchedule) else None
+        )
     except Exception:
         description = f"{task.schedule_type}: {task.schedule_config}"
+        schedule_seconds = None
 
     return TaskSummary(
         name=task.name,
         handler=task.handler,
         schedule_type=task.schedule_type,
         schedule_description=description,
+        schedule_seconds=schedule_seconds,
         timezone=task.timezone,
         enabled=bool(task.enabled),
         next_run_at=task.next_run_at,

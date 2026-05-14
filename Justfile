@@ -6,9 +6,7 @@ types-routes:
 
 types-pagedata:
   uv run scripts/typegen-pagedata.py
-  for f in frontend/src/page_data/*_schema.json; do \
-    npx --prefix frontend json2ts "$$f" > "$${f%_schema.json}.types.ts"; \
-  done
+  for f in frontend/src/page_data/*_schema.json; do npx --prefix frontend json2ts "$f" > "${f%_schema.json}.types.ts"; done
 
 types:
   just types-routes

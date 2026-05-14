@@ -18,6 +18,17 @@
           "title": "Schedule Description",
           "type": "string"
         },
+        "schedule_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Schedule Seconds"
+        },
         "timezone": {
           "anyOf": [
             {
@@ -72,6 +83,7 @@
         "handler",
         "schedule_type",
         "schedule_description",
+        "schedule_seconds",
         "timezone",
         "enabled",
         "next_run_at",
