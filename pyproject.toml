@@ -51,7 +51,10 @@ asyncio_default_fixture_loop_scope = "function"
 datasette_cron = ["static/**/*", "templates/*", "manifest.json"]
 
 [tool.setuptools.packages.find]
-exclude = ["frontend"]
+# Whitelist the package we ship. An exclude-based list let setuptools
+# walk into build/lib/ from prior builds and re-stage it, recursing into
+# build/lib/build/lib/... on every invocation.
+include = ["datasette_cron*"]
 
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]

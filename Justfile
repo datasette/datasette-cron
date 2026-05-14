@@ -64,6 +64,14 @@ check:
 test *flags:
   uv run pytest {{flags}}
 
+# === Build ===
+
+clean:
+  rm -rf build/ dist/ *.egg-info datasette_cron/__pycache__ tests/__pycache__
+
+build: clean
+  uv build
+
 # === Development ===
 
 dev *flags:
