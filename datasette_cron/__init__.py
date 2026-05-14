@@ -70,9 +70,9 @@ def startup(datasette):
         scheduler = Scheduler(datasette)
         datasette._cron_scheduler = scheduler
 
-        # Collect handlers from all plugins
-        # Use pluggy's caller info to determine plugin names
-        hook_callers = pm.parse_hookimpl_opts
+        # Collect handlers from all plugins. We catch per-plugin exceptions
+        # so one buggy plugin doesn't take down everyone else's scheduler,
+        # but we log with traceback so the failure is visible.
         for plugin in pm.get_plugins():
             if not hasattr(plugin, "cron_register_handlers"):
                 continue
@@ -85,7 +85,10 @@ def startup(datasette):
                 if result and isinstance(result, dict):
                     scheduler.register_handlers(plugin_name, result)
             except Exception:
-                pass
+                logger.exception(
+                    "Plugin %r raised while registering cron handlers",
+                    plugin_name,
+                )
 
     return inner
 

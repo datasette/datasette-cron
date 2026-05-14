@@ -757,6 +757,75 @@ async def test_scheduler_update_task():
 
 
 @pytest.mark.asyncio
+async def test_handler_registration_error_is_logged_and_does_not_block_other_plugins(
+    caplog,
+):
+    """A plugin whose cron_register_handlers raises must be logged with
+    traceback but must not prevent other plugins from registering their
+    handlers or break datasette startup.
+    """
+    from datasette import hookimpl as _hookimpl
+    from datasette.plugins import pm
+
+    class BrokenPlugin:
+        __name__ = "datasette_broken_cron_plugin"
+
+        @staticmethod
+        @_hookimpl
+        def cron_register_handlers(datasette):
+            raise RuntimeError("intentional registration failure")
+
+    class GoodPlugin:
+        __name__ = "datasette_good_cron_plugin"
+
+        @staticmethod
+        @_hookimpl
+        def cron_register_handlers(datasette):
+            async def handler(datasette, config):
+                pass
+
+            return {"good": handler}
+
+    pm.register(BrokenPlugin, name="broken_cron_plugin")
+    pm.register(GoodPlugin, name="good_cron_plugin")
+    try:
+        with caplog.at_level("ERROR", logger="datasette_cron"):
+            ds, scheduler = await _make_scheduler()
+
+        # Broken plugin's failure is logged with traceback.
+        matching = [
+            r
+            for r in caplog.records
+            if r.name == "datasette_cron"
+            and "intentional registration failure" in (r.exc_text or "")
+        ]
+        assert matching, (
+            "Expected an ERROR with traceback for the broken plugin's "
+            f"registration failure, got records: {[r.message for r in caplog.records]}"
+        )
+
+        # The good plugin's handler must still be reachable.
+        assert scheduler.get_handler("BrokenPlugin:anything") is None
+        # Pluggy registers our class with its actual __name__, so the prefix
+        # ends up being the class name. Just check that *some* GoodPlugin
+        # handler was registered.
+        good_keys = [
+            k
+            for k in scheduler._handler_registry.keys()
+            if k.endswith(":good")
+        ]
+        assert good_keys, (
+            f"Good plugin's handler missing from registry: "
+            f"{list(scheduler._handler_registry.keys())}"
+        )
+
+        await scheduler.shutdown()
+    finally:
+        pm.unregister(name="broken_cron_plugin")
+        pm.unregister(name="good_cron_plugin")
+
+
+@pytest.mark.asyncio
 async def test_update_task_timezone_recomputes_next_run():
     """Changing the timezone of a tz-bound cron task must re-derive next_run_at.
 
