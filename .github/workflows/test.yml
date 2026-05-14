@@ -21,5 +21,6 @@ jobs:
         node-version: "22"
     - uses: extractions/setup-just@v3
     - run: npm install --prefix frontend
+    - run: just types-check-fresh
     - run: just frontend
     - run: uv run pytest

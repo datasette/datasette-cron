@@ -15,6 +15,12 @@ types:
 types-watch:
   watchexec -e py --clear -- just types
 
+# Regenerate generated types and fail if the working tree diverges from
+# what's committed. Used by CI to catch "I forgot to run `just types`."
+types-check-fresh:
+  just types
+  git diff --exit-code -- frontend/api.d.ts frontend/src/page_data/
+
 # === Frontend ===
 
 frontend *flags:

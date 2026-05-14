@@ -226,8 +226,15 @@ Stored in Datasette's internal database:
 ## Development
 
 ```bash
-just dev           # start dev server
-just test          # run tests
-just format        # format code (backend + frontend)
-just check         # lint + type check (backend + frontend)
+just dev                  # start dev server
+just test                 # run tests
+just format               # format code (backend + frontend)
+just check                # lint + type check (backend + frontend)
+just types                # regenerate frontend types from Python sources
+just types-check-fresh    # CI hook: fail if generated types are stale
 ```
+
+`frontend/api.d.ts` and `frontend/src/page_data/*` are generated from the
+Python route definitions and Pydantic page-data models. They're committed
+so a fresh clone can build the frontend without first installing the
+Python toolchain; CI runs `just types-check-fresh` to catch drift.
