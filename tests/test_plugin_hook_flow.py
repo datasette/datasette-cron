@@ -33,7 +33,7 @@ class SamplePlugin:
             scheduler = datasette._cron_scheduler
             await scheduler.add_task(
                 name="test-every-second",
-                handler="test-insert",
+                handler="SamplePlugin:test-insert",
                 schedule={"interval": 1},
                 config={"from": "hook"},
                 overlap="skip",
@@ -62,8 +62,8 @@ async def ds_with_plugin():
 @pytest.mark.asyncio
 async def test_handler_registered_via_hook(ds_with_plugin):
     scheduler = ds_with_plugin._cron_scheduler
-    # Handler should be in registry (bare name since we register without prefix too)
-    assert "test-insert" in scheduler._handler_registry
+    # Handlers are only accessible via their prefixed plugin:name form.
+    assert "SamplePlugin:test-insert" in scheduler._handler_registry
 
 
 @pytest.mark.asyncio
@@ -71,7 +71,7 @@ async def test_task_created_via_startup_hook(ds_with_plugin):
     scheduler = ds_with_plugin._cron_scheduler
     task = await scheduler.internal_db.get_task("test-every-second")
     assert task is not None
-    assert task.handler == "test-insert"
+    assert task.handler == "SamplePlugin:test-insert"
     assert task.enabled == 1
 
 

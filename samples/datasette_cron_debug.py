@@ -56,7 +56,7 @@ def startup(datasette):
         scheduler = datasette._cron_scheduler
         await scheduler.add_task(
             name="debug-insert-every-second",
-            handler="debug-insert",
+            handler="cron_debug:debug-insert",
             schedule={"interval": 1},
             config={"database": db_name},
             overlap="skip",

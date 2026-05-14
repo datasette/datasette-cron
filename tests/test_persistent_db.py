@@ -30,7 +30,7 @@ class PersistentTestPlugin:
             scheduler = datasette._cron_scheduler
             await scheduler.add_task(
                 name="persistent-task",
-                handler="persistent-handler",
+                handler="PersistentTestPlugin:persistent-handler",
                 schedule={"interval": 1},
                 config={},
                 overlap="skip",
@@ -71,7 +71,7 @@ async def test_persistent_task_registered(ds_persistent):
     scheduler = ds_persistent._cron_scheduler
     task = await scheduler.internal_db.get_task("persistent-task")
     assert task is not None
-    assert task.handler == "persistent-handler"
+    assert task.handler == "PersistentTestPlugin:persistent-handler"
     assert task.enabled == 1
     assert task.next_run_at is not None
 

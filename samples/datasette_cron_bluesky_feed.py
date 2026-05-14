@@ -130,7 +130,7 @@ def startup(datasette):
         # Backfill: paginate to get recent history
         await scheduler.add_task(
             name="bluesky-congress-backfill",
-            handler="bluesky-feed-fetch",
+            handler="cron_bluesky_feed:bluesky-feed-fetch",
             schedule={"interval": 999999},
             config={"database": db_name, "limit": 100, "max_pages": 10},
             overlap="skip",
@@ -140,7 +140,7 @@ def startup(datasette):
         # Poll every 5 minutes
         await scheduler.add_task(
             name="bluesky-congress-poll",
-            handler="bluesky-feed-fetch",
+            handler="cron_bluesky_feed:bluesky-feed-fetch",
             schedule={"interval": 300},
             config={"database": db_name, "limit": 30},
             overlap="skip",

@@ -58,7 +58,7 @@ async def test_handler_registered_from_plugins_dir(ds_plugins_dir):
     scheduler = ds_plugins_dir._cron_scheduler
     handlers = list(scheduler._handler_registry.keys())
     print(f"Handlers: {handlers}")
-    assert "debug-insert" in handlers
+    assert "cron_debug:debug-insert" in handlers
 
 
 @pytest.mark.asyncio
@@ -67,7 +67,7 @@ async def test_task_created_from_plugins_dir(ds_plugins_dir):
     task = await scheduler.internal_db.get_task("debug-insert-every-second")
     print(f"Task: {task}")
     assert task is not None
-    assert task.handler == "debug-insert"
+    assert task.handler == "cron_debug:debug-insert"
     assert task.enabled == 1
 
 

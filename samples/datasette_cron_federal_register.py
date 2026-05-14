@@ -118,7 +118,7 @@ def startup(datasette):
         # Backfill: one-time fetch of past 24 hours
         await scheduler.add_task(
             name="federal-register-backfill",
-            handler="federal-register-fetch",
+            handler="cron_federal_register:federal-register-fetch",
             schedule={"interval": 999999},
             config={"database": db_name, "backfill": True, "per_page": 100},
             overlap="skip",
@@ -129,7 +129,7 @@ def startup(datasette):
         # Regular polling: every 5 minutes, fetch the 20 newest
         await scheduler.add_task(
             name="federal-register-poll",
-            handler="federal-register-fetch",
+            handler="cron_federal_register:federal-register-fetch",
             schedule={"interval": 300},
             config={"database": db_name, "per_page": 20},
             overlap="skip",

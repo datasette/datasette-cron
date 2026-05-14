@@ -44,11 +44,7 @@ class Scheduler:
         self, plugin_name: str, handlers: dict[str, Callable[..., Any]]
     ) -> None:
         for name, fn in handlers.items():
-            key = f"{plugin_name}:{name}"
-            self._handler_registry[key] = fn
-            # Also register without prefix for convenience
-            if name not in self._handler_registry:
-                self._handler_registry[name] = fn
+            self._handler_registry[f"{plugin_name}:{name}"] = fn
 
     def get_handler(self, handler_ref: str) -> Callable[..., Any] | None:
         return self._handler_registry.get(handler_ref)

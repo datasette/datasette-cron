@@ -254,7 +254,12 @@ async def test_register_handlers_with_prefix():
 
 
 @pytest.mark.asyncio
-async def test_get_handler_prefixed_and_bare():
+async def test_get_handler_only_prefixed_form():
+    """Handlers are only accessible via their fully-qualified plugin:name ref.
+
+    The bare-name alias was removed in qd6gehnf because it created silent
+    cross-plugin collisions whose resolution depended on plugin load order.
+    """
     ds, scheduler = await _make_scheduler()
 
     async def my_fn(datasette, config):
@@ -262,10 +267,10 @@ async def test_get_handler_prefixed_and_bare():
 
     scheduler.register_handlers("plug", {"action": my_fn})
 
-    # Prefixed lookup
+    # Prefixed lookup works.
     assert scheduler.get_handler("plug:action") is my_fn
-    # Bare lookup (convenience alias)
-    assert scheduler.get_handler("action") is my_fn
+    # Bare lookup returns None -- no implicit alias anymore.
+    assert scheduler.get_handler("action") is None
     # Non-existent
     assert scheduler.get_handler("no-such-handler") is None
 
@@ -273,8 +278,13 @@ async def test_get_handler_prefixed_and_bare():
 
 
 @pytest.mark.asyncio
-async def test_get_handler_bare_name_no_overwrite():
-    """If two plugins register the same bare name, first one wins."""
+async def test_handlers_with_same_name_in_different_plugins_dont_collide():
+    """Two plugins can register the same name without one shadowing the other.
+
+    Regression: previously the bare-name alias was first-write-wins, so
+    later plugins lost their bare lookup. With bare lookup gone, each plugin
+    owns its own prefixed namespace deterministically.
+    """
     ds, scheduler = await _make_scheduler()
 
     async def fn_a(datasette, config):
@@ -286,11 +296,10 @@ async def test_get_handler_bare_name_no_overwrite():
     scheduler.register_handlers("alpha", {"run": fn_a})
     scheduler.register_handlers("beta", {"run": fn_b})
 
-    # Bare name keeps the first registration
-    assert scheduler.get_handler("run") is fn_a
-    # But prefixed names are always correct
     assert scheduler.get_handler("alpha:run") is fn_a
     assert scheduler.get_handler("beta:run") is fn_b
+    # Bare name resolves to neither.
+    assert scheduler.get_handler("run") is None
 
     await scheduler.shutdown()
 
