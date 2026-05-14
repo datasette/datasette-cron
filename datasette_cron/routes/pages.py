@@ -53,7 +53,7 @@ async def cron_index(datasette, request):
     db = InternalDB(datasette.get_internal_database())
     tasks = await db.get_all_tasks()
     scheduler = datasette._cron_scheduler
-    handler_names = sorted(scheduler._handler_registry.keys())
+    handler_names = scheduler.list_handlers()
 
     page_data = IndexPageData(
         tasks=[_task_to_summary(t) for t in tasks],
@@ -82,7 +82,7 @@ async def cron_detail(datasette, request, task_name: str):
 
     runs = await db.get_runs(task_name, limit=50)
     scheduler = datasette._cron_scheduler
-    handler_names = sorted(scheduler._handler_registry.keys())
+    handler_names = scheduler.list_handlers()
 
     page_data = DetailPageData(
         task=_task_to_summary(task),

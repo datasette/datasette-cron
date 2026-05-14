@@ -278,6 +278,27 @@ async def test_get_handler_only_prefixed_form():
 
 
 @pytest.mark.asyncio
+async def test_list_handlers_returns_registered_refs_sorted():
+    """list_handlers is the public way to read the registry; routes use it
+    instead of touching _handler_registry directly.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    async def a(d, c):
+        pass
+
+    async def b(d, c):
+        pass
+
+    scheduler.register_handlers("p2", {"y": b})
+    scheduler.register_handlers("p1", {"x": a})
+
+    assert scheduler.list_handlers() == ["p1:x", "p2:y"]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_handlers_with_same_name_in_different_plugins_dont_collide():
     """Two plugins can register the same name without one shadowing the other.
 

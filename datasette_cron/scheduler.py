@@ -49,6 +49,10 @@ class Scheduler:
     def get_handler(self, handler_ref: str) -> Callable[..., Any] | None:
         return self._handler_registry.get(handler_ref)
 
+    def list_handlers(self) -> list[str]:
+        """Return all registered handler refs (plugin:name), sorted."""
+        return sorted(self._handler_registry.keys())
+
     def start(self) -> None:
         if self._loop_task is None or self._loop_task.done():
             loop = asyncio.get_running_loop()
