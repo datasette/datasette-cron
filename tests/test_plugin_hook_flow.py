@@ -72,7 +72,7 @@ async def test_task_created_via_startup_hook(ds_with_plugin):
     task = await scheduler.internal_db.get_task("test-every-second")
     assert task is not None
     assert task.handler == "SamplePlugin:test-insert"
-    assert task.enabled == 1
+    assert task.enabled is True
 
 
 @pytest.mark.asyncio

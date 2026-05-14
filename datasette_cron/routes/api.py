@@ -107,7 +107,7 @@ def _task_to_response(task: CronTask) -> dict:
         "overlap_policy": task.overlap_policy,
         "retry_max": task.retry_max,
         "retry_backoff": task.retry_backoff,
-        "enabled": bool(task.enabled),
+        "enabled": task.enabled,
         "next_run_at": task.next_run_at,
         "last_run_at": task.last_run_at,
         "last_status": task.last_status,

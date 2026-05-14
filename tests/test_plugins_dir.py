@@ -68,7 +68,7 @@ async def test_task_created_from_plugins_dir(ds_plugins_dir):
     print(f"Task: {task}")
     assert task is not None
     assert task.handler == "cron_debug:debug-insert"
-    assert task.enabled == 1
+    assert task.enabled is True
 
 
 @pytest.mark.asyncio

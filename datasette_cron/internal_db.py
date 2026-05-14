@@ -100,6 +100,9 @@ class InternalDB:
 
     def _row_to_task(self, row) -> CronTask:
         d = dict(row)
+        # SQLite stores enabled as INTEGER 0/1; coerce to bool at the
+        # boundary so the dataclass annotation reflects reality.
+        d["enabled"] = bool(d["enabled"])
         return CronTask(**d)
 
     def _row_to_run(self, row) -> CronRun:

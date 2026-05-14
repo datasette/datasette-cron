@@ -52,7 +52,7 @@ async def test_add_task_creates_task_in_db():
     assert task.handler == "test:noop"
     assert task.schedule_type == "interval"
     assert json.loads(task.config) == {"key": "value"}
-    assert task.enabled == 1
+    assert task.enabled is True
     assert task.next_run_at is not None
     assert task.overlap_policy == "skip"
     assert task.retry_max == 0
@@ -208,12 +208,12 @@ async def test_enable_disable_task():
     # Disable
     await scheduler.disable_task("toggle-task")
     task = await scheduler.internal_db.get_task("toggle-task")
-    assert task.enabled == 0
+    assert task.enabled is False
 
     # Enable
     await scheduler.enable_task("toggle-task")
     task = await scheduler.internal_db.get_task("toggle-task")
-    assert task.enabled == 1
+    assert task.enabled is True
 
     await scheduler.shutdown()
 
@@ -273,6 +273,31 @@ async def test_get_handler_only_prefixed_form():
     assert scheduler.get_handler("action") is None
     # Non-existent
     assert scheduler.get_handler("no-such-handler") is None
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cron_task_enabled_is_bool_not_int():
+    """SQLite stores enabled as INTEGER; _row_to_task must coerce to bool
+    at the boundary so the dataclass annotation matches reality.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(d, c):
+        pass
+
+    scheduler.register_handlers("t", {"h": noop})
+    await scheduler.add_task(name="bool-task", handler="t:h", schedule={"interval": 60})
+
+    enabled_task = await scheduler.internal_db.get_task("bool-task")
+    assert isinstance(enabled_task.enabled, bool)
+    assert enabled_task.enabled is True
+
+    await scheduler.disable_task("bool-task")
+    disabled_task = await scheduler.internal_db.get_task("bool-task")
+    assert isinstance(disabled_task.enabled, bool)
+    assert disabled_task.enabled is False
 
     await scheduler.shutdown()
 
@@ -449,7 +474,7 @@ async def test_internal_db_update_task_allowed_fields():
         "upd", enabled=0, handler="new-handler", last_status="success"
     )
     task = await idb.get_task("upd")
-    assert task.enabled == 0
+    assert task.enabled is False
     assert task.handler == "new-handler"
     assert task.last_status == "success"
 

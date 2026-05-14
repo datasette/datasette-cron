@@ -27,7 +27,7 @@ def _task_to_summary(task: CronTask) -> TaskSummary:
         schedule_description=description,
         schedule_seconds=schedule_seconds,
         timezone=task.timezone,
-        enabled=bool(task.enabled),
+        enabled=task.enabled,
         next_run_at=task.next_run_at,
         last_run_at=task.last_run_at,
         last_status=task.last_status,
