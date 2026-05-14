@@ -73,7 +73,11 @@ build: clean
 # === Development ===
 
 dev *flags:
-  DATASETTE_SECRET=abc123 uv run --with datasette-debug-gotham datasette -s permissions.datasette-cron-access.id "*" -p 8010 tmp.db --plugins-dir samples {{flags}}
+  mkdir -p .tmp
+  DATASETTE_SECRET=abc123 uv run --with datasette-debug-gotham datasette -s permissions.datasette-cron-access.id "*" --internal .tmp/internal.db -p 8010 .tmp/tmp.db --plugins-dir samples {{flags}}
+
+clean-dev:
+  rm -rf .tmp/
 
 dev-with-hmr *flags:
   watchexec --stop-signal SIGKILL -e py,html --ignore '*.db' --restart --clear -- \

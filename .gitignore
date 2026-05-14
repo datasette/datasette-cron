@@ -17,3 +17,4 @@ node_modules/
 manifest.json
 datasette_cron/static/gen
 *.db
+.tmp/
