@@ -109,14 +109,54 @@ class RRuleSchedule(Schedule):
     def __init__(self, rrule_str: str, tz: ZoneInfo | None = None):
         self.rrule_str = rrule_str
         self.tz = tz
-        # Validate
-        rrulestr(rrule_str)
+        # Parse once and keep the rule. An embedded DTSTART is authoritative:
+        # reusing the parsed rule preserves COUNT/UNTIL semantics instead of
+        # re-anchoring the rule at "now" on every next_run call.
+        self._rule = rrulestr(rrule_str)  # also validates
+        self._has_dtstart = "DTSTART" in rrule_str.upper()
+        if not self._has_dtstart and self._is_bounded(self._rule):
+            # Without an anchor, a COUNT/UNTIL rule would be re-anchored at
+            # "now" on every scheduler tick — COUNT would never exhaust and
+            # UNTIL would drift. Fail at construction with a clear message
+            # rather than silently mis-scheduling.
+            raise ValueError(
+                "rrule with COUNT or UNTIL requires an explicit DTSTART "
+                "(otherwise the rule would be re-anchored at every check)"
+            )
+
+    @staticmethod
+    def _is_bounded(rule) -> bool:
+        # rrulestr returns either an rrule or an rruleset wrapping rrules.
+        inner = getattr(rule, "_rrule", None)
+        rules = list(inner) if inner is not None else [rule]
+        return any(
+            getattr(r, "_count", None) is not None
+            or getattr(r, "_until", None) is not None
+            for r in rules
+        )
+
+    @staticmethod
+    def _rule_dtstart(rule) -> datetime | None:
+        dt = getattr(rule, "_dtstart", None)
+        if dt is None:
+            for r in getattr(rule, "_rrule", None) or []:
+                dt = getattr(r, "_dtstart", None)
+                if dt is not None:
+                    break
+        return dt
 
     @property
     def schedule_type(self) -> str:
         return "rrule"
 
     def next_run(self, after: datetime) -> datetime:
+        if self._has_dtstart:
+            return self._next_run_anchored(after)
+
+        # No DTSTART: relative-to-now scheduling. Re-parse with the current
+        # time as the anchor (dateutil would otherwise anchor at parse time,
+        # i.e. process start). Only valid for unbounded rules — bounded ones
+        # are rejected in __init__.
         if self.tz:
             local_after = after.replace(tzinfo=timezone.utc).astimezone(self.tz)
         else:
@@ -131,6 +171,42 @@ class RRuleSchedule(Schedule):
         if self.tz:
             return next_dt.astimezone(timezone.utc).replace(tzinfo=None)
         return next_dt.replace(tzinfo=None) if next_dt.tzinfo else next_dt
+
+    def _next_run_anchored(self, after: datetime) -> datetime:
+        """next_run for rules with an embedded DTSTART, using the stored rule.
+
+        Compares in the same naive/aware space as the rule's occurrences so
+        dateutil never mixes naive and aware datetimes.
+        """
+        anchor = self._rule_dtstart(self._rule)
+        if anchor is not None and anchor.tzinfo is not None:
+            # Aware DTSTART (e.g. DTSTART;TZID=...): compare in aware UTC.
+            next_dt = self._rule.after(after.replace(tzinfo=timezone.utc))
+            if next_dt is None:
+                return after + timedelta(days=365)
+            return next_dt.astimezone(timezone.utc).replace(tzinfo=None)
+
+        # Naive DTSTART: occurrences are naive, interpreted in the schedule's
+        # timezone (or UTC when no timezone is configured).
+        if self.tz:
+            local_after = (
+                after.replace(tzinfo=timezone.utc)
+                .astimezone(self.tz)
+                .replace(tzinfo=None)
+            )
+            next_dt = self._rule.after(local_after)
+            if next_dt is None:
+                return after + timedelta(days=365)
+            return (
+                next_dt.replace(tzinfo=self.tz)
+                .astimezone(timezone.utc)
+                .replace(tzinfo=None)
+            )
+
+        next_dt = self._rule.after(after)
+        if next_dt is None:
+            return after + timedelta(days=365)
+        return next_dt
 
     def describe(self) -> str:
         tz_str = f" ({self.tz})" if self.tz else ""

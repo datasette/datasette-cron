@@ -103,6 +103,61 @@ class TestRRuleSchedule:
         sched = RRuleSchedule("FREQ=DAILY")
         assert sched.to_dict() == {"rrule": "FREQ=DAILY"}
 
+    def test_embedded_dtstart_is_authoritative(self):
+        sched = RRuleSchedule("DTSTART:20260101T080000\nRRULE:FREQ=DAILY")
+        # Before the anchor: first occurrence is DTSTART itself
+        assert sched.next_run(datetime(2025, 12, 1)) == datetime(2026, 1, 1, 8, 0)
+        # After the anchor: occurrences stay phased on the 8:00 anchor
+        assert sched.next_run(datetime(2026, 1, 5, 12, 0)) == datetime(2026, 1, 6, 8, 0)
+        # Deterministic: same `after` gives the same answer (no re-anchoring)
+        assert sched.next_run(datetime(2026, 1, 5, 12, 0)) == sched.next_run(
+            datetime(2026, 1, 5, 12, 0)
+        )
+
+    def test_bounded_count_with_dtstart_exhausts(self):
+        sched = RRuleSchedule("DTSTART:20260101T080000\nRRULE:FREQ=DAILY;COUNT=2")
+        first = sched.next_run(datetime(2025, 12, 31))
+        assert first == datetime(2026, 1, 1, 8, 0)
+        second = sched.next_run(first)
+        assert second == datetime(2026, 1, 2, 8, 0)
+        # Exhausted: falls back to far-future instead of repeating forever
+        after_last = sched.next_run(second)
+        assert after_last == second + timedelta(days=365)
+
+    def test_bounded_rule_without_dtstart_rejected(self):
+        with pytest.raises(ValueError, match="DTSTART"):
+            RRuleSchedule("FREQ=DAILY;COUNT=3")
+        with pytest.raises(ValueError, match="DTSTART"):
+            RRuleSchedule("FREQ=DAILY;UNTIL=20270101T000000")
+
+    def test_embedded_naive_dtstart_with_tz(self):
+        # Naive DTSTART is interpreted in the schedule's timezone
+        sched = RRuleSchedule(
+            "DTSTART:20260101T080000\nRRULE:FREQ=DAILY",
+            tz=ZoneInfo("America/New_York"),
+        )
+        # 2026-01-05 12:00 UTC is 07:00 EST; next 8am ET is 13:00 UTC same day
+        next_run = sched.next_run(datetime(2026, 1, 5, 12, 0))
+        assert next_run.tzinfo is None
+        assert next_run == datetime(2026, 1, 5, 13, 0)
+
+    def test_embedded_aware_dtstart_returns_naive_utc(self):
+        # Aware DTSTART (TZID) with no schedule tz configured
+        sched = RRuleSchedule(
+            "DTSTART;TZID=America/New_York:20260101T080000\nRRULE:FREQ=DAILY"
+        )
+        # Next 8am ET after 2026-01-05 00:00 UTC is 2026-01-05 13:00 UTC
+        next_run = sched.next_run(datetime(2026, 1, 5, 0, 0))
+        assert next_run.tzinfo is None
+        assert next_run == datetime(2026, 1, 5, 13, 0)
+
+    def test_unbounded_no_dtstart_stays_relative(self):
+        # Regression guard for the no-DTSTART path: still relative to `after`
+        sched = RRuleSchedule("FREQ=WEEKLY;BYDAY=MO")
+        after = datetime(2026, 3, 31, 10, 0, 0)  # Tuesday
+        next_run = sched.next_run(after)
+        assert next_run == datetime(2026, 4, 6, 10, 0, 0)  # next Monday
+
 
 class TestParseSchedule:
     def test_parse_cron_string(self):
