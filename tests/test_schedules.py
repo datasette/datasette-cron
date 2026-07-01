@@ -270,3 +270,26 @@ class TestJitter:
         base = datetime(2026, 1, 1, 0, 0, 0)
         jittered = add_jitter(base, sched)
         assert jittered <= base + timedelta(seconds=30.1)
+
+
+def test_describe_schedule_helper():
+    from datasette_cron.schedules import describe_schedule
+
+    assert describe_schedule("interval", '{"seconds": 300}') == ("every 5m", 300)
+    assert describe_schedule("cron", '{"expression": "0 8 * * *"}') == (
+        "cron: 0 8 * * *",
+        None,
+    )
+    assert describe_schedule("rrule", '{"rrule": "FREQ=DAILY"}') == (
+        "rrule: FREQ=DAILY",
+        None,
+    )
+    # Timezone is included in the description for tz-aware schedules
+    desc, seconds = describe_schedule(
+        "cron", '{"expression": "0 8 * * *"}', "America/New_York"
+    )
+    assert desc == "cron: 0 8 * * * (America/New_York)"
+    assert seconds is None
+    # Unparseable stored config falls back to "type: config"
+    assert describe_schedule("interval", "not json") == ("interval: not json", None)
+    assert describe_schedule("nonsense", "{}") == ("nonsense: {}", None)

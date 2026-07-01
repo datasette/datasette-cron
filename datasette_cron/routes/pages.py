@@ -3,37 +3,8 @@ from dataclasses import asdict
 from datasette import Response
 
 from ..router import router, require_permission, get_scheduler
-from ..page_data import IndexPageData, DetailPageData, TaskSummary, RunSummary
+from ..page_data import IndexPageData, DetailPageData, RunSummary, task_to_summary
 from ..internal_db import InternalDB
-from ..models import CronTask
-from ..schedules import IntervalSchedule, schedule_from_db
-
-
-def _task_to_summary(task: CronTask) -> TaskSummary:
-    try:
-        sched = schedule_from_db(
-            task.schedule_type, task.schedule_config, task.timezone
-        )
-        description = sched.describe()
-        schedule_seconds = (
-            sched.seconds if isinstance(sched, IntervalSchedule) else None
-        )
-    except Exception:
-        description = f"{task.schedule_type}: {task.schedule_config}"
-        schedule_seconds = None
-
-    return TaskSummary(
-        name=task.name,
-        handler=task.handler,
-        schedule_type=task.schedule_type,
-        schedule_description=description,
-        schedule_seconds=schedule_seconds,
-        timezone=task.timezone,
-        enabled=task.enabled,
-        next_run_at=task.next_run_at,
-        last_run_at=task.last_run_at,
-        last_status=task.last_status,
-    )
 
 
 @router.GET(r"/-/cron$")
@@ -45,7 +16,7 @@ async def cron_index(datasette, request):
     handler_names = scheduler.list_handlers()
 
     page_data = IndexPageData(
-        tasks=[_task_to_summary(t) for t in tasks],
+        tasks=[task_to_summary(t) for t in tasks],
         handlers=handler_names,
     )
 
@@ -74,7 +45,7 @@ async def cron_detail(datasette, request, task_name: str):
     handler_names = scheduler.list_handlers()
 
     page_data = DetailPageData(
-        task=_task_to_summary(task),
+        task=task_to_summary(task),
         runs=[RunSummary(**asdict(r)) for r in runs],
         handlers=handler_names,
     )

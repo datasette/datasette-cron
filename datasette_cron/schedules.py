@@ -261,6 +261,24 @@ def schedule_from_db(
         raise ValueError(f"Unknown schedule type: {schedule_type}")
 
 
+def describe_schedule(
+    schedule_type: str, schedule_config: str, tz_str: str | None = None
+) -> tuple[str, float | None]:
+    """Derive (human description, interval seconds or None) from a task's
+    stored schedule columns.
+
+    `seconds` is only set for interval schedules — the frontend uses it to
+    classify "continuous" tasks. Falls back to a raw "type: config" string
+    when the stored schedule cannot be parsed.
+    """
+    try:
+        sched = schedule_from_db(schedule_type, schedule_config, tz_str)
+        seconds = sched.seconds if isinstance(sched, IntervalSchedule) else None
+        return sched.describe(), seconds
+    except Exception:
+        return f"{schedule_type}: {schedule_config}", None
+
+
 def add_jitter(next_run: datetime, schedule: Schedule) -> datetime:
     """Add jitter to prevent thundering herd."""
     if isinstance(schedule, IntervalSchedule):

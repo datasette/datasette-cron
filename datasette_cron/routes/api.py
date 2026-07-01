@@ -9,8 +9,7 @@ from pydantic import BaseModel
 from ..router import router, require_permission, get_scheduler
 from ..internal_db import InternalDB
 from ..models import CronTask
-from ..page_data import RunSummary, TaskSummary
-from ..schedules import IntervalSchedule, schedule_from_db
+from ..page_data import RunSummary, TaskSummary, task_to_summary
 
 
 # --- Response Models ---
@@ -60,41 +59,20 @@ class EnableRequest(BaseModel):
 
 
 def _task_to_response(task: CronTask) -> dict:
-    try:
-        sched = schedule_from_db(
-            task.schedule_type, task.schedule_config, task.timezone
-        )
-        description = sched.describe()
-        schedule_seconds = (
-            sched.seconds if isinstance(sched, IntervalSchedule) else None
-        )
-    except Exception:
-        description = f"{task.schedule_type}: {task.schedule_config}"
-        schedule_seconds = None
-
     import json
 
     config = task.config
     if isinstance(config, str):
         config = json.loads(config)
 
-    return {
-        "name": task.name,
-        "handler": task.handler,
-        "config": config,
-        "schedule_type": task.schedule_type,
-        "schedule_config": task.schedule_config,
-        "schedule_description": description,
-        "schedule_seconds": schedule_seconds,
-        "timezone": task.timezone,
-        "overlap_policy": task.overlap_policy,
-        "retry_max": task.retry_max,
-        "retry_backoff": task.retry_backoff,
-        "enabled": task.enabled,
-        "next_run_at": task.next_run_at,
-        "last_run_at": task.last_run_at,
-        "last_status": task.last_status,
-    }
+    return TaskResponse(
+        **task_to_summary(task).model_dump(),
+        config=config,
+        schedule_config=task.schedule_config,
+        overlap_policy=task.overlap_policy,
+        retry_max=task.retry_max,
+        retry_backoff=task.retry_backoff,
+    ).model_dump()
 
 
 # --- Routes ---
