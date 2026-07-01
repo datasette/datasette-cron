@@ -11,6 +11,8 @@ Plugins can register handler functions, then create tasks that run on a
 schedule. Tasks persist across restarts, support cron expressions and intervals,
 and record execution history.
 
+<img src="docs/screenshots/index.png" width="800" alt="The cron task list showing four scheduled tasks — an hourly import with a red error status dot, a nightly report on a cron schedule with an America/New_York timezone, a five-minute feed refresh and a disabled weekly digest — each with its handler, schedule, next-run countdown and Run now / Enabled buttons, with the registered handler names listed underneath">
+
 ## Installation
 
 ```bash
@@ -214,6 +216,11 @@ Only the most recent 100 runs per task are kept (`RUNS_RETAIN_PER_TASK` in
 a new run starts. Runs left in `"running"` state by a crashed process are
 marked `"abandoned"` on the next startup.
 
+Each task's detail page at `/-/cron/<name>` shows this history — statuses,
+durations, retry attempts and error messages:
+
+<img src="docs/screenshots/detail.png" width="800" alt="The task detail page for a flaky hourly import: cards for handler, schedule, next run and last run (red error dot), and a run history table with three ConnectionError rows for retry attempts 1 to 3, a success that recovered on attempt 2 after a TimeoutError, per-run durations, and an abandoned run from a crashed process">
+
 ## Deployment
 
 > [!WARNING]
@@ -254,9 +261,21 @@ just format               # format code (backend + frontend)
 just check                # lint + type check (backend + frontend)
 just types                # regenerate frontend types from Python sources
 just types-check-fresh    # CI hook: fail if generated types are stale
+just shots                # regenerate the committed doc screenshots
 ```
 
 `frontend/api.d.ts` and `frontend/src/page_data/*` are generated from the
 Python route definitions and Pydantic page-data models. They're committed
 so a fresh clone can build the frontend without first installing the
 Python toolchain; CI runs `just types-check-fresh` to catch drift.
+
+### Screenshots
+
+The screenshots in this README are committed under `docs/screenshots/` and
+regenerated with `just shots` (or `just shots index` for a subset). The
+harness is self-contained: it boots a throwaway Datasette on port 8492,
+seeds deterministic demo tasks and run history via a dev-only plugin in
+`frontend/scripts/shot-plugins/`, drives headless Chromium, and tears
+everything down. One-time setup: `npx playwright install chromium` (after
+`npm install` in `frontend/`). If a change affects the UI, re-run
+`just shots` and commit the updated PNGs.

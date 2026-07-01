@@ -22,6 +22,7 @@ Scheduled tasks and background jobs for Datasette. Provides a central scheduler 
 | `just format` | Format backend (ruff) + frontend (prettier) |
 | `just check` | Type-check backend (ty) + frontend (svelte-check) |
 | `just test` | Run Python tests |
+| `just shots [names...]` | Regenerate committed doc screenshots in `docs/screenshots/` (throwaway datasette on :8492; one-time setup `npx playwright install chromium` in `frontend/`) |
 
 ## Project Structure
 
