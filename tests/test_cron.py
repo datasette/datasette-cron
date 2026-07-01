@@ -196,6 +196,58 @@ async def test_remove_task_removes_from_db():
     await scheduler.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_remove_task_deletes_run_history():
+    # SQLite does not enforce the declared ON DELETE CASCADE (no
+    # PRAGMA foreign_keys=ON), so delete_task must remove run rows itself.
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"rm": noop})
+
+    await scheduler.add_task(
+        name="remove-me", handler="test:rm", schedule={"interval": 60}
+    )
+    run_id = await scheduler.internal_db.record_run_start("remove-me")
+    await scheduler.internal_db.record_run_success(run_id, duration_ms=5)
+    assert len(await scheduler.internal_db.get_runs("remove-me")) == 1
+
+    await scheduler.remove_task("remove-me")
+
+    assert await scheduler.internal_db.get_runs("remove-me") == []
+    assert "remove-me" not in [
+        t.name for t in await scheduler.internal_db.get_all_tasks()
+    ]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_remove_task_leaves_other_tasks_runs_intact():
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"rm": noop})
+
+    for name in ("task-a", "task-b"):
+        await scheduler.add_task(name=name, handler="test:rm", schedule={"interval": 60})
+        run_id = await scheduler.internal_db.record_run_start(name)
+        await scheduler.internal_db.record_run_success(run_id, duration_ms=5)
+
+    await scheduler.remove_task("task-a")
+
+    assert await scheduler.internal_db.get_runs("task-a") == []
+    remaining = await scheduler.internal_db.get_runs("task-b")
+    assert len(remaining) == 1
+    assert remaining[0].task_name == "task-b"
+
+    await scheduler.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # 4. trigger_task() runs handler
 # ---------------------------------------------------------------------------
