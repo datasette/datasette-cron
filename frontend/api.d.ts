@@ -238,11 +238,7 @@ export interface paths {
                 };
                 cookie?: never;
             };
-            requestBody: {
-                content: {
-                    "application/json": Record<string, never>;
-                };
-            };
+            requestBody?: never;
             responses: {
                 /** @description OK */
                 200: {

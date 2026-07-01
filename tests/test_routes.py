@@ -97,6 +97,32 @@ async def test_api_task_response_includes_schedule_seconds():
 
 
 @pytest.mark.asyncio
+async def test_api_trigger_takes_no_body():
+    """The trigger endpoint takes no request body. Browser callers (with
+    cookies) must still send a JSON content-type header so Datasette's CSRF
+    protection skips the request -- pin that contract here."""
+    datasette = await _setup_allowed_datasette_with_task()
+
+    # Simulated browser call: cookie + JSON content-type, empty body.
+    response = await datasette.client.post(
+        "/-/api/cron/tasks/test-task/trigger",
+        headers={"Content-Type": "application/json", "Cookie": "foo=bar"},
+    )
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+
+    # Unknown task still 404s.
+    missing = await datasette.client.post(
+        "/-/api/cron/tasks/nope/trigger",
+        headers={"Content-Type": "application/json"},
+    )
+    assert missing.status_code == 404
+    assert missing.json()["ok"] is False
+
+    await datasette._cron_scheduler.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_api_response_field_sets():
     """Pin the exact key sets of the task and run API responses -- the
     frontend's generated types depend on these shapes."""
@@ -118,11 +144,17 @@ async def test_api_response_field_sets():
         config={"key": "value"},
     )
     await scheduler.trigger_task("shaped")
-    # Let the triggered execution record its run row.
+    # Let the triggered execution record its run row. Reads here race the
+    # execution's own writes on the shared in-memory internal DB, which can
+    # transiently raise "database table is locked" -- retry until settled.
     import asyncio
+    import sqlite3
 
     for _ in range(50):
-        runs = await scheduler.internal_db.get_runs("shaped")
+        try:
+            runs = await scheduler.internal_db.get_runs("shaped")
+        except sqlite3.OperationalError:
+            runs = []
         if runs and runs[0].status != "running":
             break
         await asyncio.sleep(0.05)

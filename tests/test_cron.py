@@ -310,7 +310,7 @@ async def test_trigger_task_handler_not_found():
 
 
 # ---------------------------------------------------------------------------
-# 5. enable_task() / disable_task()
+# 5. set_enabled()
 # ---------------------------------------------------------------------------
 
 
@@ -330,12 +330,12 @@ async def test_enable_disable_task():
     )
 
     # Disable
-    await scheduler.disable_task("toggle-task")
+    await scheduler.set_enabled("toggle-task", False)
     task = await scheduler.internal_db.get_task("toggle-task")
     assert task.enabled is False
 
     # Enable
-    await scheduler.enable_task("toggle-task")
+    await scheduler.set_enabled("toggle-task", True)
     task = await scheduler.internal_db.get_task("toggle-task")
     assert task.enabled is True
 
@@ -344,8 +344,8 @@ async def test_enable_disable_task():
 
 @pytest.mark.asyncio
 async def test_enable_and_disable_both_wake_loop(monkeypatch):
-    """enable_task and disable_task must be symmetric about waking the
-    scheduler loop, so it promptly re-evaluates its sleep after either."""
+    """set_enabled must wake the scheduler loop for both directions, so it
+    promptly re-evaluates its sleep after an enable or a disable."""
     ds, scheduler = await _make_scheduler()
 
     async def noop(datasette, config):
@@ -361,11 +361,11 @@ async def test_enable_and_disable_both_wake_loop(monkeypatch):
     wakes = []
     monkeypatch.setattr(scheduler, "_wake", lambda: wakes.append(True))
 
-    await scheduler.disable_task("toggle-task")
-    assert len(wakes) == 1, "disable_task should wake the loop"
+    await scheduler.set_enabled("toggle-task", False)
+    assert len(wakes) == 1, "disabling should wake the loop"
 
-    await scheduler.enable_task("toggle-task")
-    assert len(wakes) == 2, "enable_task should wake the loop"
+    await scheduler.set_enabled("toggle-task", True)
+    assert len(wakes) == 2, "enabling should wake the loop"
 
     await scheduler.shutdown()
 
@@ -446,7 +446,7 @@ async def test_cron_task_enabled_is_bool_not_int():
     assert isinstance(enabled_task.enabled, bool)
     assert enabled_task.enabled is True
 
-    await scheduler.disable_task("bool-task")
+    await scheduler.set_enabled("bool-task", False)
     disabled_task = await scheduler.internal_db.get_task("bool-task")
     assert isinstance(disabled_task.enabled, bool)
     assert disabled_task.enabled is False

@@ -212,12 +212,9 @@ class Scheduler:
             raise ValueError(f"Handler not found: {task.handler}")
         self._spawn_execution(task, handler_fn, force=True)
 
-    async def enable_task(self, name: str) -> None:
-        await self.internal_db.update_task(name, enabled=1)
-        self._wake()
-
-    async def disable_task(self, name: str) -> None:
-        await self.internal_db.update_task(name, enabled=0)
+    async def set_enabled(self, name: str, enabled: bool) -> None:
+        """Enable or disable a task. A no-op for unknown task names."""
+        await self.internal_db.update_task(name, enabled=1 if enabled else 0)
         self._wake()
 
     # ---- Scheduler Loop ----

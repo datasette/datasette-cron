@@ -1,3 +1,4 @@
+import json
 from typing import Annotated
 
 from dataclasses import asdict
@@ -47,10 +48,6 @@ class EnableResponse(BaseModel):
 # --- Request Models ---
 
 
-class TriggerRequest(BaseModel):
-    pass
-
-
 class EnableRequest(BaseModel):
     enabled: bool
 
@@ -59,8 +56,6 @@ class EnableRequest(BaseModel):
 
 
 def _task_to_response(task: CronTask) -> dict:
-    import json
-
     config = task.config
     if isinstance(config, str):
         config = json.loads(config)
@@ -105,12 +100,10 @@ async def api_task_runs(datasette, request, task_name: str):
 
 
 @router.POST(r"/-/api/cron/tasks/(?P<task_name>[^/]+)/trigger$", output=TriggerResponse)
-async def api_trigger_task(
-    datasette,
-    request,
-    task_name: str,
-    body: Annotated[TriggerRequest, Body()],
-):
+async def api_trigger_task(datasette, request, task_name: str):
+    # No request body: the trigger endpoint takes no parameters. Callers with
+    # cookies must still send a Content-Type: application/json header so
+    # Datasette's CSRF protection skips the request.
     await require_permission(datasette, request)
     scheduler = get_scheduler(datasette)
     try:
@@ -129,8 +122,5 @@ async def api_enable_task(
 ):
     await require_permission(datasette, request)
     scheduler = get_scheduler(datasette)
-    if body.enabled:
-        await scheduler.enable_task(task_name)
-    else:
-        await scheduler.disable_task(task_name)
+    await scheduler.set_enabled(task_name, body.enabled)
     return Response.json({"ok": True, "enabled": body.enabled})

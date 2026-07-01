@@ -171,7 +171,9 @@
       const { data, errorMessage: err } = await api(
         client.POST("/-/api/cron/tasks/{task_name}/trigger", {
           params: { path: { task_name: task.name } },
-          body: {},
+          // No body, but Datasette's CSRF protection only skips requests
+          // that declare a JSON content type.
+          headers: { "Content-Type": "application/json" },
         }),
       );
       if (err !== undefined || !data?.ok) {
