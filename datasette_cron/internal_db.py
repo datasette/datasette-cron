@@ -42,7 +42,18 @@ class InternalDB:
                     overlap_policy = excluded.overlap_policy,
                     retry_max = excluded.retry_max,
                     retry_backoff = excluded.retry_backoff,
-                    next_run_at = COALESCE(datasette_cron_tasks.next_run_at, excluded.next_run_at),
+                    -- Preserve next_run_at across restarts (don't reset the
+                    -- phase / lose an imminent fire), but recompute it when
+                    -- the schedule or timezone actually changed so the new
+                    -- cadence takes effect immediately. IS NOT (not !=) so
+                    -- NULL timezones compare correctly.
+                    next_run_at = CASE
+                        WHEN datasette_cron_tasks.schedule_config IS NOT excluded.schedule_config
+                          OR datasette_cron_tasks.schedule_type   IS NOT excluded.schedule_type
+                          OR datasette_cron_tasks.timezone        IS NOT excluded.timezone
+                        THEN excluded.next_run_at
+                        ELSE COALESCE(datasette_cron_tasks.next_run_at, excluded.next_run_at)
+                    END,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
                 """,
                 [

@@ -84,17 +84,87 @@ async def test_add_task_upsert_preserves_next_run_at():
     task1 = await scheduler.internal_db.get_task("upsert-task")
     original_next_run = task1.next_run_at
 
-    # Call again with different schedule -- next_run_at should be preserved
+    # Call again with the *same* schedule (a restart) -- next_run_at should
+    # be preserved even though the upsert computed a fresh candidate value.
     await scheduler.add_task(
         name="upsert-task",
         handler="test:handler",
-        schedule={"interval": 120},
+        schedule={"interval": 60},
     )
 
     task2 = await scheduler.internal_db.get_task("upsert-task")
     assert task2.next_run_at == original_next_run
-    # But schedule_config should reflect the new interval
-    assert json.loads(task2.schedule_config)["seconds"] == 120
+    assert json.loads(task2.schedule_config)["seconds"] == 60
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_task_upsert_schedule_change_recomputes_next_run_at():
+    from datetime import datetime, timezone
+
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"handler": noop})
+
+    await scheduler.add_task(
+        name="reschedule-task",
+        handler="test:handler",
+        schedule={"interval": 300},
+    )
+    task1 = await scheduler.internal_db.get_task("reschedule-task")
+    original_next_run = task1.next_run_at
+
+    # Re-add with a different schedule -- next_run_at must be recomputed
+    # from the new schedule, not left ~300s out.
+    await scheduler.add_task(
+        name="reschedule-task",
+        handler="test:handler",
+        schedule={"interval": 1},
+    )
+
+    task2 = await scheduler.internal_db.get_task("reschedule-task")
+    assert json.loads(task2.schedule_config)["seconds"] == 1
+    assert task2.next_run_at != original_next_run
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    delta = (datetime.fromisoformat(task2.next_run_at) - now).total_seconds()
+    # Derived from the new 1s interval (plus ≤0.1s jitter), not the old 300s
+    assert -1 < delta < 5
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_add_task_upsert_timezone_change_recomputes_next_run_at():
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"handler": noop})
+
+    await scheduler.add_task(
+        name="tz-task",
+        handler="test:handler",
+        schedule="0 8 * * *",
+        timezone="America/New_York",
+    )
+    task1 = await scheduler.internal_db.get_task("tz-task")
+
+    # Same cron expression, different timezone -- "8am" now means a
+    # different UTC moment, so next_run_at must be recomputed.
+    await scheduler.add_task(
+        name="tz-task",
+        handler="test:handler",
+        schedule="0 8 * * *",
+        timezone="UTC",
+    )
+    task2 = await scheduler.internal_db.get_task("tz-task")
+    assert task2.timezone == "UTC"
+    assert task2.next_run_at != task1.next_run_at
 
     await scheduler.shutdown()
 
