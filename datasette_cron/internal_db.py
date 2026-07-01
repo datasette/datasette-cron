@@ -4,6 +4,10 @@ import json
 
 from .models import CronRun, CronTask
 
+# Maximum run-history rows kept per task. Older rows are pruned in the same
+# transaction that records each new run start.
+RUNS_RETAIN_PER_TASK = 100
+
 
 class InternalDB:
     def __init__(self, internal_db):
@@ -170,9 +174,40 @@ class InternalDB:
                 VALUES (?, strftime('%Y-%m-%dT%H:%M:%f', 'now'), 'running', ?)""",
                 [task_name, attempt],
             )
-            return cursor.lastrowid
+            run_id = cursor.lastrowid
+            # Cap run history per task: prune everything but the newest
+            # RUNS_RETAIN_PER_TASK rows, in the same transaction as the insert.
+            conn.execute(
+                """DELETE FROM datasette_cron_runs
+                WHERE task_name = ?
+                  AND id NOT IN (
+                    SELECT id FROM datasette_cron_runs
+                    WHERE task_name = ?
+                    ORDER BY id DESC LIMIT ?
+                  )""",
+                [task_name, task_name, RUNS_RETAIN_PER_TASK],
+            )
+            return run_id
 
         return await self.db.execute_write_fn(write)
+
+    async def mark_orphaned_runs_abandoned(self) -> None:
+        """Mark leftover status='running' rows as 'abandoned'.
+
+        Called at startup, before the scheduler loop starts (the loop starts
+        on the first request), so no genuine run can be in flight — any
+        'running' row must be an orphan from a crashed previous process.
+        """
+
+        def write(conn):
+            conn.execute(
+                """UPDATE datasette_cron_runs
+                SET status = 'abandoned',
+                    finished_at = strftime('%Y-%m-%dT%H:%M:%f', 'now')
+                WHERE status = 'running'"""
+            )
+
+        await self.db.execute_write_fn(write)
 
     async def record_run_success(self, run_id: int, duration_ms: int) -> None:
         def write(conn):

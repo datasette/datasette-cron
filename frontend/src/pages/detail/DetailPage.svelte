@@ -308,6 +308,7 @@
     border-radius: 50%;
     display: inline-block;
     flex-shrink: 0;
+    background: #9aa0a6; /* fallback for unknown statuses, e.g. "abandoned" */
   }
   .status-success { background: #34a853; }
   .status-error { background: #ea4335; }

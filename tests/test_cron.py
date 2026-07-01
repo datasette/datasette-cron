@@ -1250,3 +1250,99 @@ async def test_handler_called_with_correct_config():
     assert received_config == expected_config
 
     await scheduler.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Run-history retention + orphaned-run reconciliation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_history_capped_per_task():
+    from datasette_cron.internal_db import RUNS_RETAIN_PER_TASK
+
+    ds, scheduler = await _make_scheduler()
+    idb = scheduler.internal_db
+
+    run_ids = []
+    for _ in range(RUNS_RETAIN_PER_TASK + 20):
+        run_ids.append(await idb.record_run_start("capped-task"))
+
+    result = await ds.get_internal_database().execute(
+        "SELECT count(*) AS n, min(id) AS lo, max(id) AS hi"
+        " FROM datasette_cron_runs WHERE task_name = ?",
+        ["capped-task"],
+    )
+    row = result.first()
+    assert row["n"] == RUNS_RETAIN_PER_TASK
+    # The *newest* RUNS_RETAIN_PER_TASK rows survive
+    assert row["hi"] == run_ids[-1]
+    assert row["lo"] == run_ids[-RUNS_RETAIN_PER_TASK]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_run_history_prune_does_not_touch_other_tasks():
+    from datasette_cron.internal_db import RUNS_RETAIN_PER_TASK
+
+    ds, scheduler = await _make_scheduler()
+    idb = scheduler.internal_db
+
+    b_ids = [await idb.record_run_start("task-b") for _ in range(5)]
+    for _ in range(RUNS_RETAIN_PER_TASK + 10):
+        await idb.record_run_start("task-a")
+
+    result = await ds.get_internal_database().execute(
+        "SELECT task_name, count(*) AS n FROM datasette_cron_runs"
+        " GROUP BY task_name ORDER BY task_name",
+    )
+    counts = {row["task_name"]: row["n"] for row in result.rows}
+    assert counts == {"task-a": RUNS_RETAIN_PER_TASK, "task-b": 5}
+
+    # task-b rows are untouched, including the oldest
+    result = await ds.get_internal_database().execute(
+        "SELECT id FROM datasette_cron_runs WHERE task_name = ? ORDER BY id",
+        ["task-b"],
+    )
+    assert [row["id"] for row in result.rows] == b_ids
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_startup_marks_orphaned_running_rows_abandoned():
+    from datasette_cron import startup
+
+    ds, scheduler = await _make_scheduler()
+    idb = scheduler.internal_db
+
+    # Simulate a crash mid-run: a row stuck at status='running'
+    orphan_id = await idb.record_run_start("orphan-task")
+
+    # Simulate process restart by re-running the plugin's startup hook
+    await startup(ds)()
+
+    result = await ds.get_internal_database().execute(
+        "SELECT status, finished_at FROM datasette_cron_runs WHERE id = ?",
+        [orphan_id],
+    )
+    row = result.first()
+    assert row["status"] == "abandoned"
+    assert row["finished_at"] is not None
+
+    # A run started after startup reconciliation is NOT affected -- the
+    # reconciliation only happens at startup, not during normal operation.
+    new_scheduler = ds._cron_scheduler
+    new_id = await new_scheduler.internal_db.record_run_start("orphan-task")
+    result = await ds.get_internal_database().execute(
+        "SELECT status, finished_at FROM datasette_cron_runs WHERE id = ?",
+        [new_id],
+    )
+    row = result.first()
+    assert row["status"] == "running"
+    assert row["finished_at"] is None
+
+    await scheduler.shutdown()
+    if new_scheduler is not scheduler:
+        await new_scheduler.shutdown()

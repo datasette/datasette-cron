@@ -70,6 +70,11 @@ def startup(datasette):
         scheduler = Scheduler(datasette)
         datasette._cron_scheduler = scheduler
 
+        # Reconcile runs orphaned by a crashed previous process. Safe here
+        # because the scheduler loop only starts on the first request, so
+        # nothing can genuinely be running yet.
+        await scheduler.internal_db.mark_orphaned_runs_abandoned()
+
         # Collect handlers from all plugins. We catch per-plugin exceptions
         # so one buggy plugin doesn't take down everyone else's scheduler,
         # but we log with traceback so the failure is visible.

@@ -185,7 +185,7 @@ for run in runs:
 | `task_name`     | `str`         | Which task this run belongs to         |
 | `started_at`    | `str`         | ISO timestamp                          |
 | `finished_at`   | `str \| None` | ISO timestamp                          |
-| `status`        | `str`         | `"running"`, `"success"`, or `"error"` |
+| `status`        | `str`         | `"running"`, `"success"`, `"error"`, or `"abandoned"` |
 | `error_message` | `str \| None` | Error details on failure               |
 | `attempt`       | `int`         | Retry attempt number                   |
 | `duration_ms`   | `int \| None` | Execution time in milliseconds         |
@@ -208,7 +208,11 @@ Stored in Datasette's internal database:
 
 **`datasette_cron_tasks`** — task definitions and scheduling state
 
-**`datasette_cron_runs`** — execution history with timing, status, and errors
+**`datasette_cron_runs`** — execution history with timing, status, and errors.
+Only the most recent 100 runs per task are kept (`RUNS_RETAIN_PER_TASK` in
+`datasette_cron/internal_db.py`); older rows are pruned automatically whenever
+a new run starts. Runs left in `"running"` state by a crashed process are
+marked `"abandoned"` on the next startup.
 
 ## Deployment
 
