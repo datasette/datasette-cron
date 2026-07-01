@@ -65,22 +65,16 @@ class CronSchedule(Schedule):
 
 
 class IntervalSchedule(Schedule):
-    def __init__(self, seconds: float, anchor: datetime | None = None):
+    def __init__(self, seconds: float):
         if seconds <= 0:
             raise ValueError("Interval must be positive")
         self.seconds = seconds
-        self.anchor = anchor
 
     @property
     def schedule_type(self) -> str:
         return "interval"
 
     def next_run(self, after: datetime) -> datetime:
-        if self.anchor:
-            # Compute next aligned run from anchor
-            elapsed = (after - self.anchor).total_seconds()
-            periods = int(elapsed / self.seconds) + 1
-            return self.anchor + timedelta(seconds=self.seconds * periods)
         return after + timedelta(seconds=self.seconds)
 
     def describe(self) -> str:
@@ -99,10 +93,7 @@ class IntervalSchedule(Schedule):
             return f"every {d}d {h}h" if h else f"every {d}d"
 
     def to_dict(self) -> dict:
-        d: dict = {"seconds": self.seconds}
-        if self.anchor:
-            d["anchor"] = self.anchor.isoformat()
-        return d
+        return {"seconds": self.seconds}
 
 
 class RRuleSchedule(Schedule):
@@ -232,10 +223,7 @@ def parse_schedule(schedule, tz_str: str | None = None) -> Schedule:
         return CronSchedule(schedule, tz=tz)
     elif isinstance(schedule, dict):
         if "interval" in schedule:
-            anchor = None
-            if "anchor" in schedule:
-                anchor = datetime.fromisoformat(schedule["anchor"])
-            return IntervalSchedule(schedule["interval"], anchor=anchor)
+            return IntervalSchedule(schedule["interval"])
         elif "rrule" in schedule:
             return RRuleSchedule(schedule["rrule"], tz=tz)
     raise ValueError(f"Cannot parse schedule: {schedule!r}")
@@ -251,10 +239,7 @@ def schedule_from_db(
     if schedule_type == "cron":
         return CronSchedule(config["expression"], tz=tz)
     elif schedule_type == "interval":
-        anchor = None
-        if "anchor" in config:
-            anchor = datetime.fromisoformat(config["anchor"])
-        return IntervalSchedule(config["seconds"], anchor=anchor)
+        return IntervalSchedule(config["seconds"])
     elif schedule_type == "rrule":
         return RRuleSchedule(config["rrule"], tz=tz)
     else:

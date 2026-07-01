@@ -60,13 +60,6 @@ class TestIntervalSchedule:
         next_run = sched.next_run(after)
         assert next_run == datetime(2026, 3, 30, 12, 1, 0)
 
-    def test_next_run_with_anchor(self):
-        anchor = datetime(2026, 1, 1, 0, 0, 0)
-        sched = IntervalSchedule(3600, anchor=anchor)
-        after = datetime(2026, 1, 1, 2, 30, 0)
-        next_run = sched.next_run(after)
-        assert next_run == datetime(2026, 1, 1, 3, 0, 0)
-
     def test_negative_interval_raises(self):
         with pytest.raises(ValueError):
             IntervalSchedule(-1)
