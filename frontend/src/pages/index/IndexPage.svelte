@@ -11,7 +11,23 @@
   let tasks = $state(pageData.tasks);
   let now = $state(Date.now());
 
-  // Tick every 5 seconds
+  // Refresh bookkeeping. Deliberately non-reactive: the poller reads `tasks`
+  // inside a setInterval callback (async, so untracked), which means
+  // reassigning `tasks` can never re-trigger the poller — the old
+  // $effect-based refresh re-ran itself on every response and produced an
+  // unthrottled request loop while a task was due.
+  const refreshing = new Set<string>();
+  const nextPollAt = new Map<string, number>();
+  // After "Run now": poll until last_run_at advances (run completed), capped.
+  const pendingTriggers = new Map<
+    string,
+    { until: number; lastRunAt: string | null }
+  >();
+  // Bumped on every user action; refresh responses that started before the
+  // latest mutation are discarded so a stale snapshot can't revert a toggle.
+  let mutationCount = 0;
+
+  // Tick every 5 seconds (drives countdown rendering only)
   $effect(() => {
     const id = setInterval(() => {
       now = Date.now();
@@ -19,25 +35,61 @@
     return () => clearInterval(id);
   });
 
-  // Check for tasks that just became due and refresh them
-  // Skip continuous tasks (interval < 10s) to avoid excessive API hits
+  // Poll once a second; each task refreshes at most once per 1-2s while it
+  // is due, recently triggered, or running. Skip continuous tasks
+  // (interval < 10s) to avoid excessive API hits.
   $effect(() => {
-    const _t = now;
-    for (const task of tasks) {
-      if (!task.next_run_at || !task.enabled || isContinuous(task)) continue;
-      const diff = new Date(task.next_run_at + "Z").getTime() - _t;
-      if (diff < 0 && diff > -5500) {
-        refreshTask(task.name);
-      }
-    }
+    const id = setInterval(pollTasks, 1000);
+    return () => clearInterval(id);
   });
 
+  function shouldPoll(task: (typeof tasks)[number], t: number): boolean {
+    const pending = pendingTriggers.get(task.name);
+    if (pending && t < pending.until) return true;
+    if (task.last_status === "running") return true;
+    if (!task.next_run_at || !task.enabled || isContinuous(task)) return false;
+    const diff = new Date(task.next_run_at + "Z").getTime() - t;
+    return diff < 0 && diff > -5500;
+  }
+
+  function pollTasks() {
+    const t = Date.now();
+    for (const task of tasks) {
+      if (!shouldPoll(task, t)) continue;
+      if (refreshing.has(task.name)) continue;
+      if (t < (nextPollAt.get(task.name) ?? 0)) continue;
+      refreshTask(task.name);
+    }
+  }
+
   async function refreshTask(name: string) {
-    const { data } = await client.GET("/-/api/cron/tasks/{task_name}", {
-      params: { path: { task_name: name } },
-    });
-    if (data) {
-      tasks = tasks.map((t) => (t.name === name ? taskToSummary(data) : t));
+    if (refreshing.has(name)) return;
+    refreshing.add(name);
+    const startedMutation = mutationCount;
+    try {
+      const { data } = await client.GET("/-/api/cron/tasks/{task_name}", {
+        params: { path: { task_name: name } },
+      });
+      // Discard responses that raced a user action
+      if (!data || startedMutation !== mutationCount) return;
+      const updated = taskToSummary(data);
+      const prev = tasks.find((t) => t.name === name);
+      // Backoff: if the server still reports the same state (e.g. due but
+      // the scheduler hasn't advanced next_run_at yet), wait 2s before the
+      // next attempt; otherwise 1s.
+      const unchanged =
+        prev !== undefined &&
+        prev.next_run_at === updated.next_run_at &&
+        prev.last_run_at === updated.last_run_at &&
+        prev.last_status === updated.last_status;
+      nextPollAt.set(name, Date.now() + (unchanged ? 2000 : 1000));
+      tasks = tasks.map((t) => (t.name === name ? updated : t));
+      const pending = pendingTriggers.get(name);
+      if (pending && updated.last_run_at !== pending.lastRunAt) {
+        pendingTriggers.delete(name);
+      }
+    } finally {
+      refreshing.delete(name);
     }
   }
 
@@ -57,15 +109,27 @@
   }
 
   async function triggerTask(name: string) {
+    mutationCount++;
+    const prev = tasks.find((t) => t.name === name);
+    // Keep polling until the run completes (last_run_at advances), capped at
+    // 2 minutes, so the UI converges even for long-running manual triggers.
+    pendingTriggers.set(name, {
+      until: Date.now() + 120_000,
+      lastRunAt: prev?.last_run_at ?? null,
+    });
     await client.POST("/-/api/cron/tasks/{task_name}/trigger", {
       params: { path: { task_name: name } },
       body: {},
     });
-    // Wait a beat then refresh
-    setTimeout(() => refreshTask(name), 500);
+    nextPollAt.set(name, 0);
   }
 
   async function toggleTask(name: string, currentEnabled: boolean) {
+    mutationCount++; // invalidate in-flight refreshes
+    // Optimistic update; the response (or a later refresh) settles it.
+    tasks = tasks.map((t) =>
+      t.name === name ? { ...t, enabled: !currentEnabled } : t,
+    );
     const { data } = await client.POST("/-/api/cron/tasks/{task_name}/enable", {
       params: { path: { task_name: name } },
       body: { enabled: !currentEnabled },
