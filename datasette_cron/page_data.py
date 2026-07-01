@@ -18,6 +18,9 @@ class TaskSummary(BaseModel):
     last_status: str | None
 
 
+# The single run wire model — shared by the page-data layer and the JSON API
+# (routes/api.py). The CronRun dataclass in models.py is the DB-row
+# representation; this is its serialized shape.
 class RunSummary(BaseModel):
     id: int
     task_name: str

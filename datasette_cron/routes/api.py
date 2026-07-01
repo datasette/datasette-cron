@@ -9,47 +9,30 @@ from pydantic import BaseModel
 from ..router import router, require_permission, get_scheduler
 from ..internal_db import InternalDB
 from ..models import CronTask
+from ..page_data import RunSummary, TaskSummary
 from ..schedules import IntervalSchedule, schedule_from_db
 
 
 # --- Response Models ---
 
 
-class TaskResponse(BaseModel):
-    name: str
-    handler: str
+# Superset of the page-data TaskSummary: the API additionally exposes the
+# task's raw config and retry/overlap settings.
+class TaskResponse(TaskSummary):
     config: dict
-    schedule_type: str
     schedule_config: str
-    schedule_description: str
-    schedule_seconds: float | None
-    timezone: str | None
     overlap_policy: str
     retry_max: int
     retry_backoff: str
-    enabled: bool
-    next_run_at: str | None
-    last_run_at: str | None
-    last_status: str | None
 
 
 class TaskListResponse(BaseModel):
     tasks: list[TaskResponse]
 
 
-class RunResponse(BaseModel):
-    id: int
-    task_name: str
-    started_at: str
-    finished_at: str | None
-    status: str
-    error_message: str | None
-    attempt: int
-    duration_ms: int | None
-
-
 class RunListResponse(BaseModel):
-    runs: list[RunResponse]
+    # The API and page-data layers share one run wire model.
+    runs: list[RunSummary]
 
 
 class TriggerResponse(BaseModel):
@@ -140,7 +123,7 @@ async def api_task_runs(datasette, request, task_name: str):
     await require_permission(datasette, request)
     db = InternalDB(datasette.get_internal_database())
     runs = await db.get_runs(task_name)
-    return Response.json({"runs": [asdict(r) for r in runs]})
+    return Response.json({"runs": [RunSummary(**asdict(r)).model_dump() for r in runs]})
 
 
 @router.POST(r"/-/api/cron/tasks/(?P<task_name>[^/]+)/trigger$", output=TriggerResponse)

@@ -96,6 +96,83 @@ async def test_api_task_response_includes_schedule_seconds():
     await scheduler.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_api_response_field_sets():
+    """Pin the exact key sets of the task and run API responses -- the
+    frontend's generated types depend on these shapes."""
+    datasette = Datasette(
+        memory=True,
+        config={"permissions": {"datasette-cron-access": True}},
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": handler})
+    await scheduler.add_task(
+        name="shaped",
+        handler="test:h",
+        schedule={"interval": 3600},
+        config={"key": "value"},
+    )
+    await scheduler.trigger_task("shaped")
+    # Let the triggered execution record its run row.
+    import asyncio
+
+    for _ in range(50):
+        runs = await scheduler.internal_db.get_runs("shaped")
+        if runs and runs[0].status != "running":
+            break
+        await asyncio.sleep(0.05)
+
+    task_resp = await datasette.client.get("/-/api/cron/tasks/shaped")
+    assert task_resp.status_code == 200
+    task = task_resp.json()
+    assert set(task.keys()) == {
+        "name",
+        "handler",
+        "config",
+        "schedule_type",
+        "schedule_config",
+        "schedule_description",
+        "schedule_seconds",
+        "timezone",
+        "overlap_policy",
+        "retry_max",
+        "retry_backoff",
+        "enabled",
+        "next_run_at",
+        "last_run_at",
+        "last_status",
+    }
+    assert task["name"] == "shaped"
+    assert task["config"] == {"key": "value"}
+
+    list_resp = await datasette.client.get("/-/api/cron/tasks")
+    assert list_resp.status_code == 200
+    assert set(list_resp.json()["tasks"][0].keys()) == set(task.keys())
+
+    runs_resp = await datasette.client.get("/-/api/cron/tasks/shaped/runs")
+    assert runs_resp.status_code == 200
+    runs_json = runs_resp.json()["runs"]
+    assert len(runs_json) >= 1
+    assert set(runs_json[0].keys()) == {
+        "id",
+        "task_name",
+        "started_at",
+        "finished_at",
+        "status",
+        "error_message",
+        "attempt",
+        "duration_ms",
+    }
+    assert runs_json[0]["task_name"] == "shaped"
+
+    await scheduler.shutdown()
+
+
 async def _setup_allowed_datasette_with_task():
     datasette = Datasette(
         memory=True,

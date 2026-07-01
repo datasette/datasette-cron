@@ -1,9 +1,11 @@
+from dataclasses import asdict
+
 from datasette import Response
 
 from ..router import router, require_permission, get_scheduler
 from ..page_data import IndexPageData, DetailPageData, TaskSummary, RunSummary
 from ..internal_db import InternalDB
-from ..models import CronRun, CronTask
+from ..models import CronTask
 from ..schedules import IntervalSchedule, schedule_from_db
 
 
@@ -31,19 +33,6 @@ def _task_to_summary(task: CronTask) -> TaskSummary:
         next_run_at=task.next_run_at,
         last_run_at=task.last_run_at,
         last_status=task.last_status,
-    )
-
-
-def _run_to_summary(run: CronRun) -> RunSummary:
-    return RunSummary(
-        id=run.id,
-        task_name=run.task_name,
-        started_at=run.started_at,
-        finished_at=run.finished_at,
-        status=run.status,
-        error_message=run.error_message,
-        attempt=run.attempt,
-        duration_ms=run.duration_ms,
     )
 
 
@@ -86,7 +75,7 @@ async def cron_detail(datasette, request, task_name: str):
 
     page_data = DetailPageData(
         task=_task_to_summary(task),
-        runs=[_run_to_summary(r) for r in runs],
+        runs=[RunSummary(**asdict(r)) for r in runs],
         handlers=handler_names,
     )
 

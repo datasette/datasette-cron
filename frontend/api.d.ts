@@ -139,26 +139,14 @@ export interface paths {
                             name: string;
                             /** Handler */
                             handler: string;
-                            /** Config */
-                            config: {
-                                [key: string]: unknown;
-                            };
                             /** Schedule Type */
                             schedule_type: string;
-                            /** Schedule Config */
-                            schedule_config: string;
                             /** Schedule Description */
                             schedule_description: string;
                             /** Schedule Seconds */
                             schedule_seconds: number | null;
                             /** Timezone */
                             timezone: string | null;
-                            /** Overlap Policy */
-                            overlap_policy: string;
-                            /** Retry Max */
-                            retry_max: number;
-                            /** Retry Backoff */
-                            retry_backoff: string;
                             /** Enabled */
                             enabled: boolean;
                             /** Next Run At */
@@ -167,6 +155,18 @@ export interface paths {
                             last_run_at: string | null;
                             /** Last Status */
                             last_status: string | null;
+                            /** Config */
+                            config: {
+                                [key: string]: unknown;
+                            };
+                            /** Schedule Config */
+                            schedule_config: string;
+                            /** Overlap Policy */
+                            overlap_policy: string;
+                            /** Retry Max */
+                            retry_max: number;
+                            /** Retry Backoff */
+                            retry_backoff: string;
                         };
                     };
                 };
@@ -206,7 +206,7 @@ export interface paths {
                     content: {
                         "application/json": {
                             /** Runs */
-                            runs: components["schemas"]["RunResponse"][];
+                            runs: components["schemas"]["RunSummary"][];
                         };
                     };
                 };
@@ -325,26 +325,14 @@ export interface components {
             name: string;
             /** Handler */
             handler: string;
-            /** Config */
-            config: {
-                [key: string]: unknown;
-            };
             /** Schedule Type */
             schedule_type: string;
-            /** Schedule Config */
-            schedule_config: string;
             /** Schedule Description */
             schedule_description: string;
             /** Schedule Seconds */
             schedule_seconds: number | null;
             /** Timezone */
             timezone: string | null;
-            /** Overlap Policy */
-            overlap_policy: string;
-            /** Retry Max */
-            retry_max: number;
-            /** Retry Backoff */
-            retry_backoff: string;
             /** Enabled */
             enabled: boolean;
             /** Next Run At */
@@ -353,9 +341,21 @@ export interface components {
             last_run_at: string | null;
             /** Last Status */
             last_status: string | null;
+            /** Config */
+            config: {
+                [key: string]: unknown;
+            };
+            /** Schedule Config */
+            schedule_config: string;
+            /** Overlap Policy */
+            overlap_policy: string;
+            /** Retry Max */
+            retry_max: number;
+            /** Retry Backoff */
+            retry_backoff: string;
         };
-        /** RunResponse */
-        RunResponse: {
+        /** RunSummary */
+        RunSummary: {
             /** Id */
             id: number;
             /** Task Name */
