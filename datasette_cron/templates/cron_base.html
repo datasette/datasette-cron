@@ -1,5 +1,7 @@
 {% extends "base.html" %}
 
+{% block title %}{{ page_title }}{% endblock %}
+
 {% block extra_head %}
   {{ datasette_cron_vite_entry(entrypoint) | safe }}
   <script type="application/json" id="pageData">{{ page_data | tojson }}</script>

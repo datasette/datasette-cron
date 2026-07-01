@@ -83,9 +83,7 @@ async def test_api_task_response_includes_schedule_seconds():
     await scheduler.add_task(
         name="every-5s", handler="test:h", schedule={"interval": 5}
     )
-    await scheduler.add_task(
-        name="daily", handler="test:h", schedule="0 8 * * *"
-    )
+    await scheduler.add_task(name="daily", handler="test:h", schedule="0 8 * * *")
 
     interval_resp = await datasette.client.get("/-/api/cron/tasks/every-5s")
     assert interval_resp.status_code == 200
@@ -96,6 +94,69 @@ async def test_api_task_response_includes_schedule_seconds():
     assert cron_resp.json()["schedule_seconds"] is None
 
     await scheduler.shutdown()
+
+
+async def _setup_allowed_datasette_with_task():
+    datasette = Datasette(
+        memory=True,
+        config={"permissions": {"datasette-cron-access": True}},
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"my-handler": handler})
+    await scheduler.add_task(
+        name="test-task",
+        handler="test:my-handler",
+        schedule={"interval": 3600},
+    )
+    return datasette
+
+
+@pytest.mark.asyncio
+async def test_page_titles():
+    """Pages set a browser tab title via the template's title block."""
+    datasette = await _setup_allowed_datasette_with_task()
+
+    index = await datasette.client.get("/-/cron")
+    assert index.status_code == 200
+    assert "<title>Cron Tasks" in index.text
+
+    detail = await datasette.client.get("/-/cron/test-task")
+    assert detail.status_code == 200
+    assert "<title>Task: test-task" in detail.text
+
+    await datasette._cron_scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_missing_scheduler_yields_clear_error():
+    """If startup failed (no datasette._cron_scheduler), routes that need the
+    scheduler return a clear, actionable error instead of a bare
+    AttributeError traceback."""
+    datasette = await _setup_allowed_datasette_with_task()
+    scheduler = datasette._cron_scheduler
+    await scheduler.shutdown()
+    del datasette._cron_scheduler
+
+    for method, path in [
+        ("GET", "/-/cron"),
+        ("GET", "/-/cron/test-task"),
+        ("POST", "/-/api/cron/tasks/test-task/trigger"),
+        ("POST", "/-/api/cron/tasks/test-task/enable"),
+    ]:
+        if method == "GET":
+            response = await datasette.client.get(path)
+        else:
+            body = {"enabled": True} if path.endswith("/enable") else {}
+            response = await datasette.client.post(path, json=body)
+        assert response.status_code == 500, path
+        assert "datasette-cron startup did not complete" in response.text, path
+        assert "AttributeError" not in response.text, path
+        assert "no attribute" not in response.text, path
 
 
 @pytest.mark.asyncio

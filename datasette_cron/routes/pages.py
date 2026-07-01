@@ -1,6 +1,6 @@
 from datasette import Response
 
-from ..router import router, require_permission
+from ..router import router, require_permission, get_scheduler
 from ..page_data import IndexPageData, DetailPageData, TaskSummary, RunSummary
 from ..internal_db import InternalDB
 from ..models import CronRun, CronTask
@@ -52,7 +52,7 @@ async def cron_index(datasette, request):
     await require_permission(datasette, request)
     db = InternalDB(datasette.get_internal_database())
     tasks = await db.get_all_tasks()
-    scheduler = datasette._cron_scheduler
+    scheduler = get_scheduler(datasette)
     handler_names = scheduler.list_handlers()
 
     page_data = IndexPageData(
@@ -81,7 +81,7 @@ async def cron_detail(datasette, request, task_name: str):
         return Response.text("Task not found", status=404)
 
     runs = await db.get_runs(task_name, limit=50)
-    scheduler = datasette._cron_scheduler
+    scheduler = get_scheduler(datasette)
     handler_names = scheduler.list_handlers()
 
     page_data = DetailPageData(

@@ -6,7 +6,7 @@ from datasette import Response
 from datasette_plugin_router import Body
 from pydantic import BaseModel
 
-from ..router import router, require_permission
+from ..router import router, require_permission, get_scheduler
 from ..internal_db import InternalDB
 from ..models import CronTask
 from ..schedules import IntervalSchedule, schedule_from_db
@@ -151,7 +151,7 @@ async def api_trigger_task(
     body: Annotated[TriggerRequest, Body()],
 ):
     await require_permission(datasette, request)
-    scheduler = datasette._cron_scheduler
+    scheduler = get_scheduler(datasette)
     try:
         await scheduler.trigger_task(task_name)
         return Response.json({"ok": True, "message": f"Task {task_name} triggered"})
@@ -167,7 +167,7 @@ async def api_enable_task(
     body: Annotated[EnableRequest, Body()],
 ):
     await require_permission(datasette, request)
-    scheduler = datasette._cron_scheduler
+    scheduler = get_scheduler(datasette)
     if body.enabled:
         await scheduler.enable_task(task_name)
     else:
