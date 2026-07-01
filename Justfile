@@ -29,6 +29,14 @@ frontend *flags:
 frontend-dev *flags:
   npm run dev --prefix frontend -- --port 5180 {{flags}}
 
+# Regenerate committed doc screenshots in docs/screenshots/. Self-contained:
+# boots a throwaway datasette on :8492, seeds demo tasks + run history via a
+# dev-only plugin, shoots, tears down. Builds the frontend first so shots
+# reflect current code. Pass shot names for a subset, e.g. `just shots index`.
+shots *names:
+  just frontend
+  node frontend/scripts/screenshots.mjs {{names}}
+
 # === Formatting ===
 
 format-backend *flags:
