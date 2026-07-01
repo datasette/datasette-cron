@@ -13,7 +13,13 @@ from dateutil.rrule import rrulestr
 class Schedule(abc.ABC):
     @abc.abstractmethod
     def next_run(self, after: datetime) -> datetime:
-        """Return the next run time (UTC) after the given datetime."""
+        """Return the next run time (naive UTC) after the given datetime.
+
+        `after` is a *naive UTC* datetime. Implementations that convert to
+        another timezone must attach `timezone.utc` first
+        (`after.replace(tzinfo=timezone.utc)`) — calling `.astimezone()` on
+        the naive value would misinterpret it as server-local time.
+        """
 
     @abc.abstractmethod
     def describe(self) -> str:
@@ -42,7 +48,7 @@ class CronSchedule(Schedule):
 
     def next_run(self, after: datetime) -> datetime:
         if self.tz:
-            local_after = after.astimezone(self.tz)
+            local_after = after.replace(tzinfo=timezone.utc).astimezone(self.tz)
             cron = croniter(self.expression, local_after)
             local_next = cron.get_next(datetime)
             return local_next.astimezone(timezone.utc).replace(tzinfo=None)
@@ -112,7 +118,7 @@ class RRuleSchedule(Schedule):
 
     def next_run(self, after: datetime) -> datetime:
         if self.tz:
-            local_after = after.astimezone(self.tz)
+            local_after = after.replace(tzinfo=timezone.utc).astimezone(self.tz)
         else:
             local_after = after
 

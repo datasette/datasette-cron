@@ -1,3 +1,7 @@
+import os
+import sys
+import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -142,6 +146,59 @@ class TestScheduleFromDb:
     def test_unknown_type_raises(self):
         with pytest.raises(ValueError):
             schedule_from_db("unknown", "{}")
+
+
+@contextmanager
+def _forced_process_tz(tz_name):
+    """Temporarily force the process-local timezone (POSIX only)."""
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = tz_name
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="time.tzset() is POSIX-only")
+class TestNaiveUtcContract:
+    """next_run receives naive UTC; tz-aware schedules must not misread it as
+    server-local time (regression: naive .astimezone() uses the process TZ)."""
+
+    def test_cron_tz_schedule_ignores_process_tz(self):
+        with _forced_process_tz("Asia/Tokyo"):
+            sched = parse_schedule("0 8 * * *", tz_str="America/New_York")
+            # 2026-07-01 20:36 UTC is 16:36 EDT — today's 8am ET already passed,
+            # so the next 8am ET is 2026-07-02 12:00 UTC.
+            now = datetime(2026, 7, 1, 20, 36)
+            next_run = sched.next_run(now)
+            assert next_run.tzinfo is None
+            assert next_run == datetime(2026, 7, 2, 12, 0)
+            assert next_run > now
+
+    def test_rrule_tz_schedule_ignores_process_tz(self):
+        with _forced_process_tz("Asia/Tokyo"):
+            sched = parse_schedule(
+                {"rrule": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0"},
+                tz_str="America/New_York",
+            )
+            now = datetime(2026, 7, 1, 20, 36)
+            next_run = sched.next_run(now)
+            assert next_run.tzinfo is None
+            assert next_run == datetime(2026, 7, 2, 12, 0)
+            assert next_run > now
+
+    def test_rrule_no_tz_still_returns_naive(self):
+        with _forced_process_tz("Asia/Tokyo"):
+            sched = RRuleSchedule("FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0")
+            now = datetime(2026, 7, 1, 20, 36)
+            next_run = sched.next_run(now)
+            assert next_run.tzinfo is None
+            assert next_run == datetime(2026, 7, 2, 8, 0)
 
 
 class TestJitter:
