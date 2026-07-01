@@ -1,0 +1,100 @@
+/* Styles shared by IndexPage and DetailPage (both import this file).
+   Unscoped on purpose: these classes only appear on pages this plugin
+   renders, and keeping them here avoids maintaining two copies. */
+
+.cron-page {
+  max-width: 900px;
+}
+
+.cron-empty {
+  padding: 2rem;
+  text-align: center;
+  border: 1px dashed #ccc;
+  border-radius: 8px;
+  color: #666;
+}
+
+.error-banner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #f4c7c3;
+  border-radius: 6px;
+  background: #fdeded;
+  color: #b3261e;
+  font-size: 0.85rem;
+}
+.error-dismiss {
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 1rem;
+  line-height: 1;
+  padding: 0 0.25rem;
+  flex-shrink: 0;
+}
+
+.time-past {
+  color: #888;
+}
+.time-future {
+  color: #1a73e8;
+}
+.time-continuous {
+  color: #34a853;
+  font-style: italic;
+}
+
+.badge {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 3px;
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+.badge-disabled {
+  background: #f0f0f0;
+  color: #888;
+}
+.badge-enabled {
+  background: #e8f5e9;
+  color: #2e7d32;
+}
+
+.btn {
+  cursor: pointer;
+  border: 1px solid #ccc;
+  background: #fff;
+  border-radius: 4px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
+  transition:
+    background 0.1s,
+    border-color 0.1s;
+}
+.btn:hover {
+  background: #f5f5f5;
+  border-color: #aaa;
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.btn:disabled:hover {
+  background: #fff;
+  border-color: #ccc;
+}
+.btn-sm {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.78rem;
+}
+.btn-toggle.btn-on {
+  background: #e8f5e9;
+  border-color: #a5d6a7;
+  color: #2e7d32;
+}

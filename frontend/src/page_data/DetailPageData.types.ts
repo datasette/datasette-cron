@@ -24,12 +24,10 @@ export type ErrorMessage = string | null;
 export type Attempt = number;
 export type DurationMs = number | null;
 export type Runs = RunSummary[];
-export type Handlers = string[];
 
 export interface DetailPageData {
   task: TaskSummary;
   runs: Runs;
-  handlers: Handlers;
   [k: string]: unknown;
 }
 export interface TaskSummary {

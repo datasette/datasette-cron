@@ -41,13 +41,10 @@ async def cron_detail(datasette, request, task_name: str):
         return Response.text("Task not found", status=404)
 
     runs = await db.get_runs(task_name, limit=50)
-    scheduler = get_scheduler(datasette)
-    handler_names = scheduler.list_handlers()
 
     page_data = DetailPageData(
         task=task_to_summary(task),
         runs=[RunSummary(**asdict(r)) for r in runs],
-        handlers=handler_names,
     )
 
     return Response.html(

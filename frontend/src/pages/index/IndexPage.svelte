@@ -2,13 +2,19 @@
   import type { IndexPageData } from "../../page_data/IndexPageData.types.ts";
   import { loadPageData } from "../../page_data/load.ts";
   import { appState } from "../../store.svelte.ts";
-  import createClient from "openapi-fetch";
-  import type { paths } from "../../../api.d.ts";
+  import { client, api, PollBackoff } from "../../lib/api.ts";
+  import { countdown, recentlyDue } from "../../lib/time.ts";
+  import {
+    isContinuous,
+    taskToSummary,
+    type TaskSummary,
+  } from "../../lib/tasks.ts";
+  import StatusDot from "../../lib/StatusDot.svelte";
+  import "../../lib/shared.css";
 
   const pageData = loadPageData<IndexPageData>();
-  const client = createClient<paths>({ baseUrl: "/" });
 
-  let tasks = $state(pageData.tasks);
+  let tasks = $state<TaskSummary[]>(pageData.tasks);
   let now = $state(Date.now());
   let errorMessage = $state<string | null>(null);
   // Per-task busy flags so action buttons are disabled while their POST is
@@ -31,35 +37,11 @@
   // Bumped on every user action; refresh responses that started before the
   // latest mutation are discarded so a stale snapshot can't revert a toggle.
   let mutationCount = 0;
-  // Auto-refresh failure backoff: pause polling after a failure (don't
-  // hammer a dead server); reset on any success or successful user action.
-  let pollFailures = 0;
-  let pollPausedUntil = 0;
-
-  // Normalize openapi-fetch results and thrown network errors into
-  // { data } | { errorMessage } so callers can't silently ignore failures.
-  async function api<T>(
-    promise: Promise<{ data?: T; error?: unknown; response: Response }>,
-  ): Promise<{ data?: T; errorMessage?: string }> {
-    try {
-      const { data, error, response } = await promise;
-      if (error !== undefined || !response.ok) {
-        const err = error as { message?: string; error?: string } | undefined;
-        return {
-          errorMessage:
-            err?.message ?? err?.error ?? `HTTP ${response.status}`,
-        };
-      }
-      return { data };
-    } catch (e) {
-      return { errorMessage: e instanceof Error ? e.message : String(e) };
-    }
-  }
+  const backoff = new PollBackoff();
 
   function pollingRecovered() {
     errorMessage = null;
-    pollFailures = 0;
-    pollPausedUntil = 0;
+    backoff.reset();
   }
 
   // Tick every 5 seconds (drives countdown rendering only)
@@ -83,13 +65,12 @@
     if (pending && t < pending.until) return true;
     if (task.last_status === "running") return true;
     if (!task.next_run_at || !task.enabled || isContinuous(task)) return false;
-    const diff = new Date(task.next_run_at + "Z").getTime() - t;
-    return diff < 0 && diff > -5500;
+    return recentlyDue(task.next_run_at, t);
   }
 
   function pollTasks() {
     const t = Date.now();
-    if (t < pollPausedUntil) return;
+    if (t < backoff.pausedUntil) return;
     for (const task of tasks) {
       if (!shouldPoll(task, t)) continue;
       if (refreshing.has(task.name)) continue;
@@ -110,13 +91,10 @@
       );
       if (err !== undefined) {
         errorMessage = `Failed to refresh "${name}": ${err}`;
-        pollFailures++;
-        pollPausedUntil =
-          Date.now() + Math.min(60_000, 5000 * 2 ** (pollFailures - 1));
+        backoff.fail();
         return;
       }
-      pollFailures = 0;
-      pollPausedUntil = 0;
+      backoff.reset();
       // Discard responses that raced a user action
       if (!data || startedMutation !== mutationCount) return;
       const updated = taskToSummary(data);
@@ -138,21 +116,6 @@
     } finally {
       refreshing.delete(name);
     }
-  }
-
-  function taskToSummary(apiTask: Record<string, unknown>) {
-    return {
-      name: apiTask.name as string,
-      handler: apiTask.handler as string,
-      schedule_type: apiTask.schedule_type as string,
-      schedule_description: apiTask.schedule_description as string,
-      schedule_seconds: apiTask.schedule_seconds as number | null,
-      timezone: apiTask.timezone as string | null,
-      enabled: apiTask.enabled as boolean,
-      next_run_at: apiTask.next_run_at as string | null,
-      last_run_at: apiTask.last_run_at as string | null,
-      last_status: apiTask.last_status as string | null,
-    };
   }
 
   async function triggerTask(name: string) {
@@ -218,38 +181,6 @@
       busyToggle[name] = false;
     }
   }
-
-  function isContinuous(task: (typeof tasks)[number]): boolean {
-    return task.schedule_type === "interval"
-      && typeof task.schedule_seconds === "number"
-      && task.schedule_seconds < 10;
-  }
-
-  function countdown(iso: string | null): { text: string; className: string } {
-    if (!iso) return { text: "—", className: "" };
-    const diff = (new Date(iso + "Z").getTime() - now) / 1000;
-    const abs = Math.abs(diff);
-    const past = diff < 0;
-    let label: string;
-    if (abs < 120) {
-      // Under 2 minutes: show seconds
-      const s = Math.round(abs / 5) * 5; // round to nearest 5
-      label = `${s}s`;
-    } else if (abs < 3600) {
-      label = `${Math.round(abs / 60)}m`;
-    } else if (abs < 86400) {
-      const h = Math.floor(abs / 3600);
-      const m = Math.round((abs % 3600) / 60);
-      label = m > 0 ? `${h}h ${m}m` : `${h}h`;
-    } else {
-      const d = Math.floor(abs / 86400);
-      const h = Math.round((abs % 86400) / 3600);
-      label = h > 0 ? `${d}d ${h}h` : `${d}d`;
-    }
-    const text = past ? `${label} ago` : `in ${label}`;
-    const className = past ? "time-past" : "time-future";
-    return { text, className };
-  }
 </script>
 
 <div class="cron-page">
@@ -280,7 +211,7 @@
     <div class="cron-tasks">
       {#each tasks as task (task.name)}
         {@const continuous = isContinuous(task)}
-        {@const next = continuous ? { text: "continuous", className: "time-continuous" } : countdown(task.next_run_at)}
+        {@const next = continuous ? { text: "continuous", className: "time-continuous" } : countdown(task.next_run_at, now)}
         <div class="cron-task-card" class:disabled={!task.enabled}>
           <div class="task-main">
             <div class="task-name-row">
@@ -297,12 +228,10 @@
           <div class="task-status">
             <div class="task-timing">
               {#if task.last_status}
-                <span
-                  class="status-dot status-{task.last_status}"
-                  role="img"
-                  aria-label="Last run status: {task.last_status}"
-                  title={task.last_status}
-                ></span>
+                <StatusDot
+                  status={task.last_status}
+                  label="Last run status: {task.last_status}"
+                />
               {/if}
               <span class="next-run {next.className}" title={task.next_run_at ?? ""}>{next.text}</span>
             </div>
@@ -329,12 +258,22 @@
       {/each}
     </div>
   {/if}
+
+  <!-- Tasks referencing a handler not in this list never run (the scheduler
+       skips unknown handlers), so surface what's actually registered. -->
+  <div class="cron-handlers">
+    <span class="cron-handlers-label">Registered handlers:</span>
+    {#if pageData.handlers.length === 0}
+      <span class="cron-handlers-empty">none</span>
+    {:else}
+      {#each pageData.handlers as handler (handler)}
+        <code>{handler}</code>
+      {/each}
+    {/if}
+  </div>
 </div>
 
 <style>
-  .cron-page {
-    max-width: 900px;
-  }
   .cron-header {
     margin-bottom: 1.5rem;
   }
@@ -346,40 +285,9 @@
     color: #666;
     font-size: 0.9rem;
   }
-  .cron-empty {
-    padding: 2rem;
-    text-align: center;
-    border: 1px dashed #ccc;
-    border-radius: 8px;
-    color: #666;
-  }
   .cron-empty-hint {
     font-size: 0.85rem;
     margin-top: 0.5rem;
-  }
-
-  .error-banner {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #f4c7c3;
-    border-radius: 6px;
-    background: #fdeded;
-    color: #b3261e;
-    font-size: 0.85rem;
-  }
-  .error-dismiss {
-    cursor: pointer;
-    border: none;
-    background: none;
-    color: inherit;
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0 0.25rem;
-    flex-shrink: 0;
   }
 
   .cron-tasks {
@@ -457,70 +365,32 @@
     min-width: 5em;
     text-align: right;
   }
-  .time-past { color: #888; }
-  .time-future { color: #1a73e8; }
-  .time-continuous { color: #34a853; font-style: italic; }
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    background: #9aa0a6; /* fallback for unknown statuses, e.g. "abandoned" */
-  }
-  .status-success { background: #34a853; }
-  .status-error { background: #ea4335; }
-  .status-running { background: #fbbc04; }
 
   .task-actions {
     display: flex;
     gap: 0.35rem;
   }
 
-  .badge {
-    font-size: 0.7rem;
-    padding: 0.1rem 0.4rem;
-    border-radius: 3px;
-    text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-  }
-  .badge-disabled {
-    background: #f0f0f0;
+  .btn-toggle:not(.btn-on) {
     color: #888;
   }
 
-  .btn {
-    cursor: pointer;
-    border: 1px solid #ccc;
-    background: #fff;
-    border-radius: 4px;
-    padding: 0.25rem 0.6rem;
+  .cron-handlers {
+    margin-top: 1.5rem;
     font-size: 0.8rem;
-    transition: background 0.1s, border-color 0.1s;
-  }
-  .btn:hover {
-    background: #f5f5f5;
-    border-color: #aaa;
-  }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn:disabled:hover {
-    background: #fff;
-    border-color: #ccc;
-  }
-  .btn-sm {
-    padding: 0.2rem 0.5rem;
-    font-size: 0.78rem;
-  }
-  .btn-toggle.btn-on {
-    background: #e8f5e9;
-    border-color: #a5d6a7;
-    color: #2e7d32;
-  }
-  .btn-toggle:not(.btn-on) {
     color: #888;
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .cron-handlers code {
+    font-size: 0.75rem;
+    background: #f0f0f0;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+  }
+  .cron-handlers-empty {
+    font-style: italic;
   }
 </style>

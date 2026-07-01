@@ -63,7 +63,6 @@ class IndexPageData(BaseModel):
 class DetailPageData(BaseModel):
     task: TaskSummary
     runs: list[RunSummary]
-    handlers: list[str]
 
 
 __exports__ = [IndexPageData, DetailPageData]

@@ -173,19 +173,11 @@
       },
       "title": "Runs",
       "type": "array"
-    },
-    "handlers": {
-      "items": {
-        "type": "string"
-      },
-      "title": "Handlers",
-      "type": "array"
     }
   },
   "required": [
     "task",
-    "runs",
-    "handlers"
+    "runs"
   ],
   "title": "DetailPageData",
   "type": "object"

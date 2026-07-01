@@ -1,5 +1,7 @@
 from datasette.app import Datasette
+import json
 import pytest
+import re
 
 
 async def _setup_datasette_with_task():
@@ -308,9 +310,10 @@ async def test_missing_scheduler_yields_clear_error():
     await scheduler.shutdown()
     del datasette._cron_scheduler
 
+    # Note: the detail page (/-/cron/<task>) is not listed — it renders
+    # purely from the internal DB and no longer touches the scheduler.
     for method, path in [
         ("GET", "/-/cron"),
-        ("GET", "/-/cron/test-task"),
         ("POST", "/-/api/cron/tasks/test-task/trigger"),
         ("POST", "/-/api/cron/tasks/test-task/enable"),
     ]:
@@ -323,6 +326,40 @@ async def test_missing_scheduler_yields_clear_error():
         assert "datasette-cron startup did not complete" in response.text, path
         assert "AttributeError" not in response.text, path
         assert "no attribute" not in response.text, path
+
+    # The detail page renders from the internal DB alone and still works.
+    detail = await datasette.client.get("/-/cron/test-task")
+    assert detail.status_code == 200
+
+
+def _embedded_page_data(html: str) -> dict:
+    match = re.search(
+        r'<script type="application/json" id="pageData">(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    assert match is not None
+    return json.loads(match.group(1))
+
+
+@pytest.mark.asyncio
+async def test_page_data_handlers_only_on_index():
+    """The index page embeds the registered-handlers list in its page data
+    (rendered as a debugging aid for handler-ref typos); the detail page no
+    longer ships the unused field."""
+    datasette = await _setup_allowed_datasette_with_task()
+
+    index = await datasette.client.get("/-/cron")
+    assert index.status_code == 200
+    # Membership, not equality: sample plugins loaded by other test modules
+    # register handlers in the process-global plugin registry.
+    assert "test:my-handler" in _embedded_page_data(index.text)["handlers"]
+
+    detail = await datasette.client.get("/-/cron/test-task")
+    assert detail.status_code == 200
+    assert "handlers" not in _embedded_page_data(detail.text)
+
+    await datasette._cron_scheduler.shutdown()
 
 
 @pytest.mark.asyncio

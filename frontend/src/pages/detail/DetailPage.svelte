@@ -2,13 +2,19 @@
   import type { DetailPageData } from "../../page_data/DetailPageData.types.ts";
   import { loadPageData } from "../../page_data/load.ts";
   import { appState } from "../../store.svelte.ts";
-  import createClient from "openapi-fetch";
-  import type { paths } from "../../../api.d.ts";
+  import { client, api, PollBackoff } from "../../lib/api.ts";
+  import { countdown, recentlyDue } from "../../lib/time.ts";
+  import {
+    isContinuous,
+    taskToSummary,
+    type TaskSummary,
+  } from "../../lib/tasks.ts";
+  import StatusDot from "../../lib/StatusDot.svelte";
+  import "../../lib/shared.css";
 
   const pageData = loadPageData<DetailPageData>();
-  const client = createClient<paths>({ baseUrl: "/" });
 
-  let task = $state(pageData.task);
+  let task = $state<TaskSummary>(pageData.task);
   let runs = $state(pageData.runs);
   let now = $state(Date.now());
   let errorMessage = $state<string | null>(null);
@@ -17,11 +23,7 @@
   let busyTrigger = $state(false);
   let busyToggle = $state(false);
 
-  const continuous = $derived(
-    task.schedule_type === "interval"
-      && typeof task.schedule_seconds === "number"
-      && task.schedule_seconds < 10
-  );
+  const continuous = $derived(isContinuous(task));
 
   // Refresh bookkeeping. Deliberately non-reactive: the poller reads state
   // inside a setInterval callback (async, so untracked), which means
@@ -37,35 +39,11 @@
   // Bumped on every user action; refresh responses that started before the
   // latest mutation are discarded so a stale snapshot can't revert a toggle.
   let mutationCount = 0;
-  // Auto-refresh failure backoff: pause polling after a failure (don't
-  // hammer a dead server); reset on any success or successful user action.
-  let pollFailures = 0;
-  let pollPausedUntil = 0;
-
-  // Normalize openapi-fetch results and thrown network errors into
-  // { data } | { errorMessage } so callers can't silently ignore failures.
-  async function api<T>(
-    promise: Promise<{ data?: T; error?: unknown; response: Response }>,
-  ): Promise<{ data?: T; errorMessage?: string }> {
-    try {
-      const { data, error, response } = await promise;
-      if (error !== undefined || !response.ok) {
-        const err = error as { message?: string; error?: string } | undefined;
-        return {
-          errorMessage:
-            err?.message ?? err?.error ?? `HTTP ${response.status}`,
-        };
-      }
-      return { data };
-    } catch (e) {
-      return { errorMessage: e instanceof Error ? e.message : String(e) };
-    }
-  }
+  const backoff = new PollBackoff();
 
   function pollingRecovered() {
     errorMessage = null;
-    pollFailures = 0;
-    pollPausedUntil = 0;
+    backoff.reset();
   }
 
   // Tick every 5 seconds (drives countdown rendering only)
@@ -85,13 +63,12 @@
     if (pendingTrigger && t < pendingTrigger.until) return true;
     if (runs.some((r) => r.status === "running")) return true;
     if (continuous || !task.next_run_at || !task.enabled) return false;
-    const diff = new Date(task.next_run_at + "Z").getTime() - t;
-    return diff < 0 && diff > -5500;
+    return recentlyDue(task.next_run_at, t);
   }
 
   function poll() {
     const t = Date.now();
-    if (refreshing || t < nextPollAt || t < pollPausedUntil) return;
+    if (refreshing || t < nextPollAt || t < backoff.pausedUntil) return;
     if (!shouldPoll(t)) return;
     refreshTask();
   }
@@ -114,28 +91,14 @@
       const err = taskErr ?? runsResp.errorMessage;
       if (err !== undefined) {
         errorMessage = `Failed to refresh "${task.name}": ${err}`;
-        pollFailures++;
-        pollPausedUntil =
-          Date.now() + Math.min(60_000, 5000 * 2 ** (pollFailures - 1));
+        backoff.fail();
         return;
       }
-      pollFailures = 0;
-      pollPausedUntil = 0;
+      backoff.reset();
       // Discard responses that raced a user action
       if (startedMutation !== mutationCount) return;
       if (data) {
-        const updated = {
-          name: data.name as string,
-          handler: data.handler as string,
-          schedule_type: data.schedule_type as string,
-          schedule_description: data.schedule_description as string,
-          schedule_seconds: data.schedule_seconds as number | null,
-          timezone: data.timezone as string | null,
-          enabled: data.enabled as boolean,
-          next_run_at: data.next_run_at as string | null,
-          last_run_at: data.last_run_at as string | null,
-          last_status: data.last_status as string | null,
-        };
+        const updated = taskToSummary(data);
         // Backoff: if the server still reports the same state (e.g. due but
         // the scheduler hasn't advanced next_run_at yet), wait 2s before
         // the next attempt; otherwise 1s.
@@ -150,7 +113,7 @@
         task = updated;
       }
       if (runsResp.data) {
-        runs = runsResp.data.runs as typeof runs;
+        runs = runsResp.data.runs;
       }
     } finally {
       refreshing = false;
@@ -216,31 +179,6 @@
     }
   }
 
-  function countdown(iso: string | null): { text: string; className: string } {
-    if (!iso) return { text: "—", className: "" };
-    const diff = (new Date(iso + "Z").getTime() - now) / 1000;
-    const abs = Math.abs(diff);
-    const past = diff < 0;
-    let label: string;
-    if (abs < 120) {
-      const s = Math.round(abs / 5) * 5;
-      label = `${s}s`;
-    } else if (abs < 3600) {
-      label = `${Math.round(abs / 60)}m`;
-    } else if (abs < 86400) {
-      const h = Math.floor(abs / 3600);
-      const m = Math.round((abs % 3600) / 60);
-      label = m > 0 ? `${h}h ${m}m` : `${h}h`;
-    } else {
-      const d = Math.floor(abs / 86400);
-      const h = Math.round((abs % 86400) / 3600);
-      label = h > 0 ? `${d}d ${h}h` : `${d}d`;
-    }
-    const text = past ? `${label} ago` : `in ${label}`;
-    const className = past ? "time-past" : "time-future";
-    return { text, className };
-  }
-
   function formatDuration(ms: number | null): string {
     if (ms === null) return "—";
     if (ms < 1000) return `${ms}ms`;
@@ -301,7 +239,7 @@
       {#if continuous}
         <div class="card-value time-continuous">continuous</div>
       {:else}
-        {@const next = countdown(task.next_run_at)}
+        {@const next = countdown(task.next_run_at, now)}
         <div class="card-value {next.className}" title={task.next_run_at ?? ""}>{next.text}</div>
       {/if}
     </div>
@@ -309,14 +247,12 @@
       <div class="card-label">Last Run</div>
       <div class="card-value" title={task.last_run_at ?? ""}>
         {#if task.last_status}
-          <span
-            class="status-dot status-{task.last_status}"
-            role="img"
-            aria-label="Last run status: {task.last_status}"
-            title={task.last_status}
-          ></span>
+          <StatusDot
+            status={task.last_status}
+            label="Last run status: {task.last_status}"
+          />
         {/if}
-        {task.last_run_at ? countdown(task.last_run_at).text : "never"}
+        {task.last_run_at ? countdown(task.last_run_at, now).text : "never"}
       </div>
     </div>
     {#if task.timezone}
@@ -343,14 +279,13 @@
         </tr>
       </thead>
       <tbody>
-        {#each runs as run}
-          {@const started = countdown(run.started_at)}
+        {#each runs as run (run.id)}
+          {@const started = countdown(run.started_at, now)}
           <tr class="run-row run-{run.status}">
             <td title={run.started_at}>{started.text}</td>
             <td>
               <!-- decorative: the status text follows -->
-              <span class="status-dot status-{run.status}" aria-hidden="true"
-              ></span>
+              <StatusDot status={run.status} />
               {run.status}
             </td>
             <td class="mono">{formatDuration(run.duration_ms)}</td>
@@ -364,9 +299,6 @@
 </div>
 
 <style>
-  .cron-page {
-    max-width: 900px;
-  }
   .back-link {
     display: inline-block;
     margin-bottom: 0.75rem;
@@ -425,9 +357,6 @@
     padding: 0.1rem 0.35rem;
     border-radius: 3px;
   }
-  .time-past { color: #888; }
-  .time-future { color: #1a73e8; }
-  .time-continuous { color: #34a853; font-style: italic; }
 
   .runs-table {
     width: 100%;
@@ -459,84 +388,5 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .status-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    display: inline-block;
-    flex-shrink: 0;
-    background: #9aa0a6; /* fallback for unknown statuses, e.g. "abandoned" */
-  }
-  .status-success { background: #34a853; }
-  .status-error { background: #ea4335; }
-  .status-running { background: #fbbc04; }
-
-  .badge {
-    font-size: 0.7rem;
-    padding: 0.15rem 0.5rem;
-    border-radius: 3px;
-    text-transform: uppercase;
-    font-weight: 600;
-    letter-spacing: 0.03em;
-  }
-  .badge-disabled { background: #f0f0f0; color: #888; }
-  .badge-enabled { background: #e8f5e9; color: #2e7d32; }
-
-  .error-banner {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 1rem;
-    margin-bottom: 1rem;
-    padding: 0.5rem 0.75rem;
-    border: 1px solid #f4c7c3;
-    border-radius: 6px;
-    background: #fdeded;
-    color: #b3261e;
-    font-size: 0.85rem;
-  }
-  .error-dismiss {
-    cursor: pointer;
-    border: none;
-    background: none;
-    color: inherit;
-    font-size: 1rem;
-    line-height: 1;
-    padding: 0 0.25rem;
-    flex-shrink: 0;
-  }
-
-  .cron-empty {
-    padding: 2rem;
-    text-align: center;
-    border: 1px dashed #ccc;
-    border-radius: 8px;
-    color: #666;
-  }
-
-  .btn {
-    cursor: pointer;
-    border: 1px solid #ccc;
-    background: #fff;
-    border-radius: 4px;
-    padding: 0.35rem 0.75rem;
-    font-size: 0.85rem;
-    transition: background 0.1s, border-color 0.1s;
-  }
-  .btn:hover { background: #f5f5f5; border-color: #aaa; }
-  .btn:disabled {
-    opacity: 0.5;
-    cursor: default;
-  }
-  .btn:disabled:hover {
-    background: #fff;
-    border-color: #ccc;
-  }
-  .btn-toggle.btn-on {
-    background: #e8f5e9;
-    border-color: #a5d6a7;
-    color: #2e7d32;
   }
 </style>
