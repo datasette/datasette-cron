@@ -248,8 +248,10 @@ class Scheduler:
                 break
         logger.info("Scheduler loop stopped")
 
-    async def _tick(self) -> None:
-        now = _utcnow()
+    async def _tick(self, now: datetime | None = None) -> None:
+        # `now` is injectable for tests; production always uses wall-clock.
+        if now is None:
+            now = _utcnow()
         due_tasks = await self.internal_db.get_due_tasks()
 
         for task in due_tasks:
@@ -276,6 +278,16 @@ class Scheduler:
 
             # Advance next_run_at regardless of whether we spawned — a skipped
             # run still consumes its scheduling slot.
+            #
+            # The new next_run is deliberately anchored to the tick's
+            # wall-clock `now`, not the task's stored (scheduled) next_run_at:
+            # - intervals mean "at least N seconds between scheduled starts",
+            #   so their phase drifts by tick latency; this also means a
+            #   scheduler that was down never tries to catch up on missed
+            #   slots (no burst of back-to-back runs after downtime).
+            # - cron/rrule next-runs are absolute wall-clock times, so a slot
+            #   is only skipped when the tick itself is more than a full
+            #   period late — acceptable for a best-effort scheduler.
             sched = schedule_from_db(
                 task.schedule_type, task.schedule_config, task.timezone
             )

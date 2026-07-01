@@ -114,9 +114,7 @@ class InternalDB:
             # something we control on Datasette's shared internal-DB
             # connection — so delete the child run rows explicitly, in the
             # same transaction.
-            conn.execute(
-                "DELETE FROM datasette_cron_runs WHERE task_name = ?", [name]
-            )
+            conn.execute("DELETE FROM datasette_cron_runs WHERE task_name = ?", [name])
             conn.execute("DELETE FROM datasette_cron_tasks WHERE name = ?", [name])
 
         await self.db.execute_write_fn(write)

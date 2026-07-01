@@ -234,7 +234,9 @@ async def test_remove_task_leaves_other_tasks_runs_intact():
     scheduler.register_handlers("test", {"rm": noop})
 
     for name in ("task-a", "task-b"):
-        await scheduler.add_task(name=name, handler="test:rm", schedule={"interval": 60})
+        await scheduler.add_task(
+            name=name, handler="test:rm", schedule={"interval": 60}
+        )
         run_id = await scheduler.internal_db.record_run_start(name)
         await scheduler.internal_db.record_run_success(run_id, duration_ms=5)
 
@@ -978,9 +980,7 @@ async def test_handler_registration_error_is_logged_and_does_not_block_other_plu
         # ends up being the class name. Just check that *some* GoodPlugin
         # handler was registered.
         good_keys = [
-            k
-            for k in scheduler._handler_registry.keys()
-            if k.endswith(":good")
+            k for k in scheduler._handler_registry.keys() if k.endswith(":good")
         ]
         assert good_keys, (
             f"Good plugin's handler missing from registry: "
@@ -1468,3 +1468,83 @@ async def test_startup_marks_orphaned_running_rows_abandoned():
     await scheduler.shutdown()
     if new_scheduler is not scheduler:
         await new_scheduler.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# next_run anchoring: _tick recomputes from the tick's wall-clock `now`
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_anchors_interval_next_run_to_tick_time():
+    """Pin the intended anchoring contract: when an interval task fires, the
+    next run is computed from the tick's wall-clock `now`, NOT from the task's
+    stored (scheduled) next_run_at. The interval phase drifts by tick latency,
+    and a scheduler that was down never plays catch-up on missed slots."""
+    from datetime import datetime, timedelta
+
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="drifty", handler="test:noop", schedule={"interval": 60}
+    )
+
+    # Make the task due long ago -- as if the scheduler was down for an hour.
+    idb = scheduler.internal_db
+    past = datetime(2026, 1, 1, 12, 0, 0)
+    await idb.update_next_run("drifty", past.isoformat())
+
+    tick_now = datetime(2026, 1, 1, 13, 0, 30)
+    await scheduler._tick(now=tick_now)
+
+    task = await idb.get_task("drifty")
+    next_run = datetime.fromisoformat(task.next_run_at)
+    # Anchored to tick-time: now + 60s (+ up to 10% interval jitter = 6s).
+    assert tick_now + timedelta(seconds=60) <= next_run
+    assert next_run <= tick_now + timedelta(seconds=66)
+    # NOT catch-up scheduling: nowhere near the missed 12:01:00 boundary.
+    assert next_run > past + timedelta(hours=1)
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_late_in_slot_does_not_skip_next_cron_boundary():
+    """A tick landing late within the current slot (e.g. HH:MM:59.8 for an
+    every-minute cron) still schedules the very next boundary -- croniter
+    computes strictly-after `now`, so a slot is only skipped when the tick
+    itself is more than a full period late."""
+    from datetime import datetime, timedelta
+
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="every-minute", handler="test:noop", schedule="* * * * *"
+    )
+
+    idb = scheduler.internal_db
+    await idb.update_next_run(
+        "every-minute", datetime(2026, 1, 1, 12, 0, 0).isoformat()
+    )
+
+    # Tick arrives 59.8s into the minute.
+    tick_now = datetime(2026, 1, 1, 12, 0, 59, 800000)
+    await scheduler._tick(now=tick_now)
+
+    task = await idb.get_task("every-minute")
+    next_run = datetime.fromisoformat(task.next_run_at)
+    boundary = datetime(2026, 1, 1, 12, 1, 0)
+    # Next fire is the immediately-following boundary (+ up to 5s cron jitter),
+    # not two minutes out.
+    assert boundary <= next_run
+    assert next_run <= boundary + timedelta(seconds=5)
+
+    await scheduler.shutdown()
