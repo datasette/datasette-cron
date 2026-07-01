@@ -10,6 +10,11 @@
 
   let tasks = $state(pageData.tasks);
   let now = $state(Date.now());
+  let errorMessage = $state<string | null>(null);
+  // Per-task busy flags so action buttons are disabled while their POST is
+  // in flight (a double-clicked "Run now" would force-run twice).
+  let busyTrigger = $state<Record<string, boolean>>({});
+  let busyToggle = $state<Record<string, boolean>>({});
 
   // Refresh bookkeeping. Deliberately non-reactive: the poller reads `tasks`
   // inside a setInterval callback (async, so untracked), which means
@@ -26,6 +31,36 @@
   // Bumped on every user action; refresh responses that started before the
   // latest mutation are discarded so a stale snapshot can't revert a toggle.
   let mutationCount = 0;
+  // Auto-refresh failure backoff: pause polling after a failure (don't
+  // hammer a dead server); reset on any success or successful user action.
+  let pollFailures = 0;
+  let pollPausedUntil = 0;
+
+  // Normalize openapi-fetch results and thrown network errors into
+  // { data } | { errorMessage } so callers can't silently ignore failures.
+  async function api<T>(
+    promise: Promise<{ data?: T; error?: unknown; response: Response }>,
+  ): Promise<{ data?: T; errorMessage?: string }> {
+    try {
+      const { data, error, response } = await promise;
+      if (error !== undefined || !response.ok) {
+        const err = error as { message?: string; error?: string } | undefined;
+        return {
+          errorMessage:
+            err?.message ?? err?.error ?? `HTTP ${response.status}`,
+        };
+      }
+      return { data };
+    } catch (e) {
+      return { errorMessage: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  function pollingRecovered() {
+    errorMessage = null;
+    pollFailures = 0;
+    pollPausedUntil = 0;
+  }
 
   // Tick every 5 seconds (drives countdown rendering only)
   $effect(() => {
@@ -54,6 +89,7 @@
 
   function pollTasks() {
     const t = Date.now();
+    if (t < pollPausedUntil) return;
     for (const task of tasks) {
       if (!shouldPoll(task, t)) continue;
       if (refreshing.has(task.name)) continue;
@@ -67,9 +103,20 @@
     refreshing.add(name);
     const startedMutation = mutationCount;
     try {
-      const { data } = await client.GET("/-/api/cron/tasks/{task_name}", {
-        params: { path: { task_name: name } },
-      });
+      const { data, errorMessage: err } = await api(
+        client.GET("/-/api/cron/tasks/{task_name}", {
+          params: { path: { task_name: name } },
+        }),
+      );
+      if (err !== undefined) {
+        errorMessage = `Failed to refresh "${name}": ${err}`;
+        pollFailures++;
+        pollPausedUntil =
+          Date.now() + Math.min(60_000, 5000 * 2 ** (pollFailures - 1));
+        return;
+      }
+      pollFailures = 0;
+      pollPausedUntil = 0;
       // Discard responses that raced a user action
       if (!data || startedMutation !== mutationCount) return;
       const updated = taskToSummary(data);
@@ -109,6 +156,8 @@
   }
 
   async function triggerTask(name: string) {
+    if (busyTrigger[name]) return;
+    busyTrigger[name] = true;
     mutationCount++;
     const prev = tasks.find((t) => t.name === name);
     // Keep polling until the run completes (last_run_at advances), capped at
@@ -117,27 +166,54 @@
       until: Date.now() + 120_000,
       lastRunAt: prev?.last_run_at ?? null,
     });
-    await client.POST("/-/api/cron/tasks/{task_name}/trigger", {
-      params: { path: { task_name: name } },
-      body: {},
-    });
-    nextPollAt.set(name, 0);
+    try {
+      const { data, errorMessage: err } = await api(
+        client.POST("/-/api/cron/tasks/{task_name}/trigger", {
+          params: { path: { task_name: name } },
+          body: {},
+        }),
+      );
+      if (err !== undefined || !data?.ok) {
+        pendingTriggers.delete(name);
+        errorMessage = `Failed to trigger "${name}": ${err ?? data?.message ?? "unknown error"}`;
+        return;
+      }
+      pollingRecovered();
+      nextPollAt.set(name, 0);
+    } finally {
+      busyTrigger[name] = false;
+    }
   }
 
   async function toggleTask(name: string, currentEnabled: boolean) {
+    if (busyToggle[name]) return;
+    busyToggle[name] = true;
     mutationCount++; // invalidate in-flight refreshes
     // Optimistic update; the response (or a later refresh) settles it.
     tasks = tasks.map((t) =>
       t.name === name ? { ...t, enabled: !currentEnabled } : t,
     );
-    const { data } = await client.POST("/-/api/cron/tasks/{task_name}/enable", {
-      params: { path: { task_name: name } },
-      body: { enabled: !currentEnabled },
-    });
-    if (data?.ok) {
+    try {
+      const { data, errorMessage: err } = await api(
+        client.POST("/-/api/cron/tasks/{task_name}/enable", {
+          params: { path: { task_name: name } },
+          body: { enabled: !currentEnabled },
+        }),
+      );
+      if (err !== undefined || !data?.ok) {
+        // Revert the optimistic update
+        tasks = tasks.map((t) =>
+          t.name === name ? { ...t, enabled: currentEnabled } : t,
+        );
+        errorMessage = `Failed to ${currentEnabled ? "disable" : "enable"} "${name}": ${err ?? "unknown error"}`;
+        return;
+      }
       tasks = tasks.map((t) =>
         t.name === name ? { ...t, enabled: data.enabled } : t,
       );
+      pollingRecovered();
+    } finally {
+      busyToggle[name] = false;
     }
   }
 
@@ -180,6 +256,19 @@
     <p class="cron-subtitle">{tasks.length} registered task{tasks.length !== 1 ? "s" : ""}</p>
   </div>
 
+  {#if errorMessage}
+    <div class="error-banner" role="alert">
+      <span>{errorMessage}</span>
+      <button
+        class="error-dismiss"
+        onclick={() => (errorMessage = null)}
+        aria-label="Dismiss error"
+      >
+        &times;
+      </button>
+    </div>
+  {/if}
+
   {#if tasks.length === 0}
     <div class="cron-empty">
       <p>No scheduled tasks registered.</p>
@@ -206,15 +295,28 @@
           <div class="task-status">
             <div class="task-timing">
               {#if task.last_status}
-                <span class="status-dot status-{task.last_status}"></span>
+                <span
+                  class="status-dot status-{task.last_status}"
+                  role="img"
+                  aria-label="Last run status: {task.last_status}"
+                  title={task.last_status}
+                ></span>
               {/if}
               <span class="next-run {next.className}" title={task.next_run_at ?? ""}>{next.text}</span>
             </div>
             <div class="task-actions">
-              <button class="btn btn-sm" onclick={() => triggerTask(task.name)}>Run now</button>
+              <button
+                class="btn btn-sm"
+                disabled={!!busyTrigger[task.name]}
+                onclick={() => triggerTask(task.name)}
+              >
+                Run now
+              </button>
               <button
                 class="btn btn-sm btn-toggle"
                 class:btn-on={task.enabled}
+                aria-pressed={task.enabled}
+                disabled={!!busyToggle[task.name]}
                 onclick={() => toggleTask(task.name, task.enabled)}
               >
                 {task.enabled ? "Enabled" : "Disabled"}
@@ -252,6 +354,30 @@
   .cron-empty-hint {
     font-size: 0.85rem;
     margin-top: 0.5rem;
+  }
+
+  .error-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #f4c7c3;
+    border-radius: 6px;
+    background: #fdeded;
+    color: #b3261e;
+    font-size: 0.85rem;
+  }
+  .error-dismiss {
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+    flex-shrink: 0;
   }
 
   .cron-tasks {
@@ -374,6 +500,14 @@
   .btn:hover {
     background: #f5f5f5;
     border-color: #aaa;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn:disabled:hover {
+    background: #fff;
+    border-color: #ccc;
   }
   .btn-sm {
     padding: 0.2rem 0.5rem;

@@ -11,6 +11,11 @@
   let task = $state(pageData.task);
   let runs = $state(pageData.runs);
   let now = $state(Date.now());
+  let errorMessage = $state<string | null>(null);
+  // Busy flags so action buttons are disabled while their POST is in flight
+  // (a double-clicked "Run now" would force-run twice).
+  let busyTrigger = $state(false);
+  let busyToggle = $state(false);
 
   const continuous = $derived(
     task.schedule_type === "interval"
@@ -32,6 +37,36 @@
   // Bumped on every user action; refresh responses that started before the
   // latest mutation are discarded so a stale snapshot can't revert a toggle.
   let mutationCount = 0;
+  // Auto-refresh failure backoff: pause polling after a failure (don't
+  // hammer a dead server); reset on any success or successful user action.
+  let pollFailures = 0;
+  let pollPausedUntil = 0;
+
+  // Normalize openapi-fetch results and thrown network errors into
+  // { data } | { errorMessage } so callers can't silently ignore failures.
+  async function api<T>(
+    promise: Promise<{ data?: T; error?: unknown; response: Response }>,
+  ): Promise<{ data?: T; errorMessage?: string }> {
+    try {
+      const { data, error, response } = await promise;
+      if (error !== undefined || !response.ok) {
+        const err = error as { message?: string; error?: string } | undefined;
+        return {
+          errorMessage:
+            err?.message ?? err?.error ?? `HTTP ${response.status}`,
+        };
+      }
+      return { data };
+    } catch (e) {
+      return { errorMessage: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  function pollingRecovered() {
+    errorMessage = null;
+    pollFailures = 0;
+    pollPausedUntil = 0;
+  }
 
   // Tick every 5 seconds (drives countdown rendering only)
   $effect(() => {
@@ -56,7 +91,7 @@
 
   function poll() {
     const t = Date.now();
-    if (refreshing || t < nextPollAt) return;
+    if (refreshing || t < nextPollAt || t < pollPausedUntil) return;
     if (!shouldPoll(t)) return;
     refreshTask();
   }
@@ -66,12 +101,26 @@
     refreshing = true;
     const startedMutation = mutationCount;
     try {
-      const { data } = await client.GET("/-/api/cron/tasks/{task_name}", {
-        params: { path: { task_name: task.name } },
-      });
-      const runsResp = await client.GET("/-/api/cron/tasks/{task_name}/runs", {
-        params: { path: { task_name: task.name } },
-      });
+      const { data, errorMessage: taskErr } = await api(
+        client.GET("/-/api/cron/tasks/{task_name}", {
+          params: { path: { task_name: task.name } },
+        }),
+      );
+      const runsResp = await api(
+        client.GET("/-/api/cron/tasks/{task_name}/runs", {
+          params: { path: { task_name: task.name } },
+        }),
+      );
+      const err = taskErr ?? runsResp.errorMessage;
+      if (err !== undefined) {
+        errorMessage = `Failed to refresh "${task.name}": ${err}`;
+        pollFailures++;
+        pollPausedUntil =
+          Date.now() + Math.min(60_000, 5000 * 2 ** (pollFailures - 1));
+        return;
+      }
+      pollFailures = 0;
+      pollPausedUntil = 0;
       // Discard responses that raced a user action
       if (startedMutation !== mutationCount) return;
       if (data) {
@@ -109,6 +158,8 @@
   }
 
   async function triggerTask() {
+    if (busyTrigger) return;
+    busyTrigger = true;
     mutationCount++;
     // Keep polling until the run completes (last_run_at advances), capped at
     // 2 minutes, so the UI converges even for long-running manual triggers.
@@ -116,24 +167,50 @@
       until: Date.now() + 120_000,
       lastRunAt: task.last_run_at,
     };
-    await client.POST("/-/api/cron/tasks/{task_name}/trigger", {
-      params: { path: { task_name: task.name } },
-      body: {},
-    });
-    nextPollAt = 0;
+    try {
+      const { data, errorMessage: err } = await api(
+        client.POST("/-/api/cron/tasks/{task_name}/trigger", {
+          params: { path: { task_name: task.name } },
+          body: {},
+        }),
+      );
+      if (err !== undefined || !data?.ok) {
+        pendingTrigger = null;
+        errorMessage = `Failed to trigger "${task.name}": ${err ?? data?.message ?? "unknown error"}`;
+        return;
+      }
+      pollingRecovered();
+      nextPollAt = 0;
+    } finally {
+      busyTrigger = false;
+    }
   }
 
   async function toggleTask() {
+    if (busyToggle) return;
+    busyToggle = true;
     mutationCount++; // invalidate in-flight refreshes
-    const wanted = !task.enabled;
+    const previous = task.enabled;
+    const wanted = !previous;
     // Optimistic update; the response (or a later refresh) settles it.
     task = { ...task, enabled: wanted };
-    const { data } = await client.POST("/-/api/cron/tasks/{task_name}/enable", {
-      params: { path: { task_name: task.name } },
-      body: { enabled: wanted },
-    });
-    if (data?.ok) {
+    try {
+      const { data, errorMessage: err } = await api(
+        client.POST("/-/api/cron/tasks/{task_name}/enable", {
+          params: { path: { task_name: task.name } },
+          body: { enabled: wanted },
+        }),
+      );
+      if (err !== undefined || !data?.ok) {
+        // Revert the optimistic update
+        task = { ...task, enabled: previous };
+        errorMessage = `Failed to ${wanted ? "enable" : "disable"} "${task.name}": ${err ?? "unknown error"}`;
+        return;
+      }
       task = { ...task, enabled: data.enabled };
+      pollingRecovered();
+    } finally {
+      busyToggle = false;
     }
   }
 
@@ -182,16 +259,31 @@
       {/if}
     </div>
     <div class="detail-actions">
-      <button class="btn" onclick={triggerTask}>Run now</button>
+      <button class="btn" disabled={busyTrigger} onclick={triggerTask}>Run now</button>
       <button
         class="btn btn-toggle"
         class:btn-on={task.enabled}
+        aria-pressed={task.enabled}
+        disabled={busyToggle}
         onclick={toggleTask}
       >
         {task.enabled ? "Disable" : "Enable"}
       </button>
     </div>
   </div>
+
+  {#if errorMessage}
+    <div class="error-banner" role="alert">
+      <span>{errorMessage}</span>
+      <button
+        class="error-dismiss"
+        onclick={() => (errorMessage = null)}
+        aria-label="Dismiss error"
+      >
+        &times;
+      </button>
+    </div>
+  {/if}
 
   <div class="detail-grid">
     <div class="detail-card">
@@ -215,7 +307,12 @@
       <div class="card-label">Last Run</div>
       <div class="card-value" title={task.last_run_at ?? ""}>
         {#if task.last_status}
-          <span class="status-dot status-{task.last_status}"></span>
+          <span
+            class="status-dot status-{task.last_status}"
+            role="img"
+            aria-label="Last run status: {task.last_status}"
+            title={task.last_status}
+          ></span>
         {/if}
         {task.last_run_at ? countdown(task.last_run_at).text : "never"}
       </div>
@@ -249,7 +346,9 @@
           <tr class="run-row run-{run.status}">
             <td title={run.started_at}>{started.text}</td>
             <td>
-              <span class="status-dot status-{run.status}"></span>
+              <!-- decorative: the status text follows -->
+              <span class="status-dot status-{run.status}" aria-hidden="true"
+              ></span>
               {run.status}
             </td>
             <td class="mono">{formatDuration(run.duration_ms)}</td>
@@ -383,6 +482,30 @@
   .badge-disabled { background: #f0f0f0; color: #888; }
   .badge-enabled { background: #e8f5e9; color: #2e7d32; }
 
+  .error-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: 0.5rem 0.75rem;
+    border: 1px solid #f4c7c3;
+    border-radius: 6px;
+    background: #fdeded;
+    color: #b3261e;
+    font-size: 0.85rem;
+  }
+  .error-dismiss {
+    cursor: pointer;
+    border: none;
+    background: none;
+    color: inherit;
+    font-size: 1rem;
+    line-height: 1;
+    padding: 0 0.25rem;
+    flex-shrink: 0;
+  }
+
   .cron-empty {
     padding: 2rem;
     text-align: center;
@@ -401,6 +524,14 @@
     transition: background 0.1s, border-color 0.1s;
   }
   .btn:hover { background: #f5f5f5; border-color: #aaa; }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  .btn:disabled:hover {
+    background: #fff;
+    border-color: #ccc;
+  }
   .btn-toggle.btn-on {
     background: #e8f5e9;
     border-color: #a5d6a7;
