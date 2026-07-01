@@ -342,6 +342,34 @@ async def test_enable_disable_task():
     await scheduler.shutdown()
 
 
+@pytest.mark.asyncio
+async def test_enable_and_disable_both_wake_loop(monkeypatch):
+    """enable_task and disable_task must be symmetric about waking the
+    scheduler loop, so it promptly re-evaluates its sleep after either."""
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"toggle": noop})
+    await scheduler.add_task(
+        name="toggle-task",
+        handler="test:toggle",
+        schedule={"interval": 60},
+    )
+
+    wakes = []
+    monkeypatch.setattr(scheduler, "_wake", lambda: wakes.append(True))
+
+    await scheduler.disable_task("toggle-task")
+    assert len(wakes) == 1, "disable_task should wake the loop"
+
+    await scheduler.enable_task("toggle-task")
+    assert len(wakes) == 2, "enable_task should wake the loop"
+
+    await scheduler.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # 6. register_handlers() with prefix
 # ---------------------------------------------------------------------------

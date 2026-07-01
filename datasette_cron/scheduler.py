@@ -218,6 +218,7 @@ class Scheduler:
 
     async def disable_task(self, name: str) -> None:
         await self.internal_db.update_task(name, enabled=0)
+        self._wake()
 
     # ---- Scheduler Loop ----
 
