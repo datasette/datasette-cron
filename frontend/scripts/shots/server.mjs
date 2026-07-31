@@ -11,10 +11,15 @@
 // inserts a fixed run history, all in its startup hook. No cookie machinery:
 // the permission gate is opened for the anonymous actor with a -s setting.
 //
-// NOTE: the cron scheduler loop starts on the FIRST request — which is this
-// file's readiness poll — so tasks genuinely tick while shots run. The seeded
-// schedules all have their next fire >= 5 minutes out, so nothing executes
-// mid-shoot and the seeded run history stays exactly as written.
+// NOTE: the cron scheduler loop is now launched at server boot (a supervised
+// background task registered from the plugin's startup hook, started once
+// every plugin's startup hook has completed — before this file's readiness
+// poll can even get a response), not on the first request as it used to be.
+// It genuinely ticks while shots run either way. The seeded schedules all
+// have their next fire >= 5 minutes out, so nothing executes mid-shoot and
+// the seeded run history stays exactly as written — if anything this is a
+// safer invariant now, since it no longer depends on the readiness poll's
+// timing at all.
 
 import { spawn, execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";

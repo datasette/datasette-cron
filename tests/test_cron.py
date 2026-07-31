@@ -844,11 +844,21 @@ async def test_plugin_is_installed():
 
 @pytest.mark.asyncio
 async def test_scheduler_starts_on_startup():
+    """The loop is registered from `startup` as a core-supervised
+    background task (`datasette.add_background_task(scheduler.run, ...)`),
+    launched by `datasette.start_background_tasks()` -- and torn down by
+    `invoke_shutdown()`, which runs our `shutdown` hook (cancelling
+    in-flight executions) before core cancels the loop task itself."""
     ds, scheduler = await _make_scheduler()
-    scheduler.start()
-    assert scheduler._loop_task is not None
-    assert not scheduler._loop_task.done()
-    await scheduler.shutdown()
+    await ds.start_background_tasks()
+    handles = {handle.name: handle for handle in ds._background_tasks.tasks()}
+    handle = handles["datasette-cron"]
+    assert handle.state == "running"
+    assert handle.task is not None
+    assert not handle.task.done()
+
+    await ds.invoke_shutdown()
+    assert handle.task.done()
 
 
 # ---------------------------------------------------------------------------

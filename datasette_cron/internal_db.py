@@ -211,8 +211,11 @@ class InternalDB:
     async def mark_orphaned_runs_abandoned(self) -> None:
         """Mark leftover status='running' rows as 'abandoned'.
 
-        Called at startup, before the scheduler loop starts (the loop starts
-        on the first request), so no genuine run can be in flight — any
+        Called at startup, before the scheduler loop starts. Core only
+        launches supervised background tasks (including the scheduler loop,
+        registered via `datasette.add_background_task` at the end of this
+        plugin's `startup` hook) after every plugin's startup hook has
+        completed, so no genuine run can be in flight yet -- any
         'running' row must be an orphan from a crashed previous process.
         """
 

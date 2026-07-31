@@ -58,10 +58,12 @@ async def ds_persistent():
                 internal=internal_path,
                 config={"permissions": {"datasette-cron-access": True}},
             )
-            await datasette.invoke_startup()
-            datasette._cron_scheduler.start()
+            await datasette.start_background_tasks()
             yield datasette
-            await datasette._cron_scheduler.shutdown()
+            # Full app teardown: scheduler.shutdown() alone no longer stops
+            # the loop task -- it's core-supervised now, cancelled by
+            # invoke_shutdown() (which runs our `shutdown` hook first).
+            await datasette.invoke_shutdown()
     finally:
         pm.unregister(PersistentTestPlugin, name="persistent_test")
 
