@@ -10,7 +10,7 @@ Usage:
 
 from datasette import hookimpl
 from datetime import datetime, timedelta, timezone
-import httpx
+import httpx2
 
 
 API_URL = "https://www.federalregister.gov/api/v1/documents.json"
@@ -32,7 +32,7 @@ async def fetch_federal_register(datasette, config):
         )
         params["conditions[publication_date][gte]"] = yesterday
 
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         page = 1
         while True:
             params["page"] = page

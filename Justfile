@@ -88,7 +88,14 @@ build: clean
 
 dev *flags:
   mkdir -p .tmp
-  DATASETTE_SECRET=abc123 uv run --with datasette-debug-gotham datasette -s permissions.datasette-cron-access.id "*" --internal .tmp/internal.db -p 8010 .tmp/tmp.db --plugins-dir samples {{flags}}
+  DATASETTE_SECRET=abc123 uv run datasette \
+    -s permissions.datasette-cron-access true \
+    -s permissions.permissions-debug true \
+    --internal .tmp/internal.db \
+    -p 8010 \
+    .tmp/tmp.db \
+    --plugins-dir samples \
+    {{flags}}
 
 clean-dev:
   rm -rf .tmp/
