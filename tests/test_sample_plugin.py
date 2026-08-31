@@ -32,10 +32,13 @@ async def ds():
         overlap="skip",
     )
 
-    scheduler.start()
+    await datasette.start_background_tasks()
     datasette._test_call_count = lambda: call_count
     yield datasette
-    await scheduler.shutdown()
+    # Full app teardown: scheduler.shutdown() alone no longer stops the loop
+    # task -- it's core-supervised now, cancelled by invoke_shutdown() (which
+    # runs our `shutdown` hook first).
+    await datasette.invoke_shutdown()
 
 
 @pytest.mark.asyncio

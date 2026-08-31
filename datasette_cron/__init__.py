@@ -71,8 +71,9 @@ def startup(datasette):
         datasette._cron_scheduler = scheduler
 
         # Reconcile runs orphaned by a crashed previous process. Safe here
-        # because the scheduler loop only starts on the first request, so
-        # nothing can genuinely be running yet.
+        # because core only launches supervised background tasks (including
+        # our scheduler loop, registered below) after every plugin's startup
+        # hook has completed, so nothing can genuinely be running yet.
         await scheduler.internal_db.mark_orphaned_runs_abandoned()
 
         # Collect handlers from all plugins. We catch per-plugin exceptions
@@ -95,42 +96,21 @@ def startup(datasette):
                     plugin_name,
                 )
 
+        # Register the loop as a supervised background task. Core launches
+        # it only after every plugin's startup hook (this one included) has
+        # finished, so any downstream plugin that calls
+        # scheduler.add_task(...) from its own startup hook is guaranteed to
+        # have run first -- no first-request fallback required.
+        datasette.add_background_task(scheduler.run, name="datasette-cron")
+
     return inner
 
 
 @hookimpl
-def asgi_wrapper(datasette):
-    def wrapper(app):
-        _scheduler_started = False
+def shutdown(datasette):
+    async def inner():
+        scheduler = getattr(datasette, "_cron_scheduler", None)
+        if scheduler:
+            await scheduler.shutdown()
 
-        async def asgi_app(scope, receive, send):
-            nonlocal _scheduler_started
-
-            if scope["type"] == "lifespan":
-
-                async def wrapped_receive():
-                    message = await receive()
-                    if message["type"] == "lifespan.shutdown":
-                        scheduler = getattr(datasette, "_cron_scheduler", None)
-                        if scheduler:
-                            try:
-                                await scheduler.shutdown()
-                            except Exception:
-                                pass
-                    return message
-
-                await app(scope, wrapped_receive, send)
-            else:
-                # Start the scheduler loop on the first non-lifespan request,
-                # after all startup hooks have completed.
-                if not _scheduler_started:
-                    _scheduler_started = True
-                    scheduler = getattr(datasette, "_cron_scheduler", None)
-                    if scheduler:
-                        scheduler.start()
-
-                await app(scope, receive, send)
-
-        return asgi_app
-
-    return wrapper
+    return inner

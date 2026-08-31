@@ -34,13 +34,12 @@ async def ds_plugins_dir():
             plugins_dir=samples_dir,
             config={"permissions": {"datasette-cron-access": True}},
         )
-        await datasette.invoke_startup()
-        if hasattr(datasette, "_cron_scheduler"):
-            datasette._cron_scheduler.start()
+        await datasette.start_background_tasks()
         yield datasette
-        scheduler = getattr(datasette, "_cron_scheduler", None)
-        if scheduler:
-            await scheduler.shutdown()
+        # Full app teardown: scheduler.shutdown() alone no longer stops the
+        # loop task -- it's core-supervised now, cancelled by
+        # invoke_shutdown() (which runs our `shutdown` hook first).
+        await datasette.invoke_shutdown()
 
 
 @pytest.mark.asyncio
