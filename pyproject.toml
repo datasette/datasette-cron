@@ -10,7 +10,7 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a23",
+    "datasette>=1.0a38",
     "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a4",
     "pydantic>=2",
@@ -23,6 +23,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "datasette-debug-gotham>=0.1.0a3",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.15.0",
@@ -59,3 +60,8 @@ include = ["datasette_cron*"]
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]
 
+# TODO: remove once datasette 1.0a38 is on PyPI. Until then, resolve datasette
+# from the first-request lifecycle branch stack (add_background_task, the
+# shutdown hook) that 1.0a38 will ship.
+[tool.uv.sources]
+datasette = { git = "https://github.com/simonw/datasette", branch = "asg017/first-request-7-docs-and-changelog" }
