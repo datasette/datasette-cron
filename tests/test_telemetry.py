@@ -1,12 +1,46 @@
 """
-Smoke tests for the telemetry scaffolding: the tracer emits under our own
-instrumentation scope, and core's root-with-link helper is importable and
-wired up. The helper's own behaviour is tested in core's suite.
+Tests for datasette-cron's OpenTelemetry instrumentation, using the
+in-memory exporter fixtures imported from core's telemetry testing kit in
+conftest.py.
 """
 
+import asyncio
+
+import pytest
+from datasette.app import Datasette
 from datasette.telemetry import SCHEMA_URL, linked_root_span_kwargs
+from opentelemetry.trace import StatusCode
 
 from datasette_cron.telemetry import tracer
+
+PAST = "2000-01-01T00:00:00"
+
+
+async def _make_scheduler(**ds_kwargs):
+    ds = Datasette(
+        memory=True,
+        config={"permissions": {"datasette-cron-access": True}},
+        **ds_kwargs,
+    )
+    await ds.invoke_startup()
+    return ds, ds._cron_scheduler
+
+
+async def _drain(scheduler):
+    "Await every in-flight execution so its spans have finished."
+    tasks = [t for ts in scheduler._running_tasks.values() for t in ts]
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+def _spans_named(otel_spans, name):
+    return [s for s in otel_spans.get_finished_spans() if s.name == name]
+
+
+def _one_span(otel_spans, name):
+    spans = _spans_named(otel_spans, name)
+    assert len(spans) == 1, f"expected one {name!r} span, got {len(spans)}"
+    return spans[0]
 
 
 def test_tracer_emits_under_own_scope(otel_spans):
@@ -31,3 +65,267 @@ def test_linked_root_span_kwargs_links_current_span(otel_spans):
 def test_linked_root_span_kwargs_without_current_span(otel_spans):
     kwargs = linked_root_span_kwargs()
     assert kwargs["links"] == []
+
+
+# --- datasette_cron.run / attempt / backoff -------------------------------
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+    otel_spans.clear()
+
+    await scheduler._tick()
+    await _drain(scheduler)
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.parent is None
+    assert run.attributes["datasette_cron.task"] == "t"
+    assert run.attributes["datasette_cron.handler"] == "test:noop"
+    assert run.attributes["datasette.plugin"] == "test"
+    assert run.attributes["code.function"].endswith("noop")
+    assert run.attributes["datasette_cron.trigger"] == "scheduled"
+    assert run.attributes["datasette_cron.max_attempts"] == 1
+    assert run.attributes["datasette_cron.scheduled_at"] == PAST
+    assert run.attributes["datasette_cron.lag"] >= 0
+    assert run.attributes["datasette_cron.attempts"] == 1
+    assert run.attributes["datasette_cron.status"] == "success"
+    assert "error.type" not in run.attributes
+    assert run.status.status_code is StatusCode.UNSET
+
+    attempt = _one_span(otel_spans, "datasette_cron.attempt")
+    assert attempt.parent.span_id == run.context.span_id
+    assert attempt.attributes["datasette_cron.attempt"] == 1
+    assert attempt.attributes["datasette_cron.handler.async"] is True
+    rows = (
+        await ds.get_internal_database().execute("SELECT id FROM datasette_cron_runs")
+    ).rows
+    assert attempt.attributes["datasette_cron.run_id"] == rows[0]["id"]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manual_trigger_via_http_links_request_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    response = await ds.client.post("/-/api/cron/tasks/t/trigger", json={})
+    assert response.status_code == 200
+    await _drain(scheduler)
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.parent is None
+    assert run.attributes["datasette_cron.trigger"] == "manual"
+    assert "datasette_cron.scheduled_at" not in run.attributes
+    assert len(run.links) == 1
+    request_spans = [
+        s
+        for s in otel_spans.get_finished_spans()
+        if s.context.span_id == run.links[0].context.span_id
+    ]
+    assert len(request_spans) == 1
+    assert request_spans[0].name.startswith("POST")
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_retry_spans(otel_spans, monkeypatch):
+    ds, scheduler = await _make_scheduler()
+    monkeypatch.setattr(
+        type(scheduler), "_backoff_delay", staticmethod(lambda strategy, attempt: 0.01)
+    )
+    calls = 0
+
+    async def flaky(datasette, config):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("first attempt fails")
+
+    scheduler.register_handlers("test", {"flaky": flaky})
+    await scheduler.add_task(
+        name="t",
+        handler="test:flaky",
+        schedule={"interval": 99999},
+        retry={"max_retries": 1},
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await _drain(scheduler)
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.attributes["datasette_cron.status"] == "success"
+    assert run.attributes["datasette_cron.attempts"] == 2
+    assert run.attributes["datasette_cron.max_attempts"] == 2
+    assert "error.type" not in run.attributes
+    assert run.status.status_code is StatusCode.UNSET
+
+    first, second = _spans_named(otel_spans, "datasette_cron.attempt")
+    assert first.attributes["datasette_cron.attempt"] == 1
+    assert first.attributes["error.type"] == "RuntimeError"
+    assert first.status.status_code is StatusCode.ERROR
+    assert any(e.name == "exception" for e in first.events)
+    assert second.attributes["datasette_cron.attempt"] == 2
+    assert second.status.status_code is StatusCode.UNSET
+
+    backoff = _one_span(otel_spans, "datasette_cron.backoff")
+    assert backoff.parent.span_id == run.context.span_id
+    assert backoff.attributes["datasette_cron.backoff_delay"] == 0.01
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_final_failure_run_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def broken(datasette, config):
+        raise ValueError("boom")
+
+    scheduler.register_handlers("test", {"broken": broken})
+    await scheduler.add_task(
+        name="t", handler="test:broken", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await _drain(scheduler)
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.attributes["datasette_cron.status"] == "error"
+    assert run.attributes["datasette_cron.attempts"] == 1
+    assert run.attributes["error.type"] == "ValueError"
+    assert run.status.status_code is StatusCode.ERROR
+    assert run.status.description == "boom"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+    in_handler = asyncio.Event()
+
+    async def hang(datasette, config):
+        in_handler.set()
+        await asyncio.sleep(60)
+
+    scheduler.register_handlers("test", {"hang": hang})
+    await scheduler.add_task(
+        name="t", handler="test:hang", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+    await scheduler.shutdown()
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.attributes["datasette_cron.status"] == "cancelled"
+    assert run.attributes["error.type"] == "CancelledError"
+    assert run.status.status_code is StatusCode.ERROR
+
+    attempt = _one_span(otel_spans, "datasette_cron.attempt")
+    assert attempt.attributes["error.type"] == "CancelledError"
+    assert attempt.status.status_code is StatusCode.ERROR
+
+
+@pytest.mark.asyncio
+async def test_sync_handler_marked_on_attempt_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    def sync_handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"sync": sync_handler})
+    await scheduler.add_task(
+        name="t", handler="test:sync", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await _drain(scheduler)
+
+    attempt = _one_span(otel_spans, "datasette_cron.attempt")
+    assert attempt.attributes["datasette_cron.handler.async"] is False
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_handler_queries_nest_under_attempt_span(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def queries(datasette, config):
+        await datasette.get_internal_database().execute("SELECT 1")
+
+    scheduler.register_handlers("test", {"queries": queries})
+    await scheduler.add_task(
+        name="t", handler="test:queries", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await _drain(scheduler)
+
+    attempt = _one_span(otel_spans, "datasette_cron.attempt")
+    children = [
+        s
+        for s in _spans_named(otel_spans, "db.query")
+        if s.parent is not None and s.parent.span_id == attempt.context.span_id
+    ]
+    # The handler's own SELECT plus the runs-table bookkeeping writes all
+    # parent to the attempt span, in the same trace as the run.
+    assert any(
+        s.attributes.get("db.query.text", "").startswith("SELECT 1") for s in children
+    )
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert all(s.context.trace_id == run.context.trace_id for s in children)
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_run_span_is_root_with_link_not_child(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+    otel_spans.clear()
+
+    with tracer.start_as_current_span("outer") as outer:
+        await scheduler._tick()
+        await _drain(scheduler)
+
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert run.parent is None
+    assert len(run.links) == 1
+    assert run.links[0].context.span_id == outer.get_span_context().span_id
+
+    await scheduler.shutdown()
