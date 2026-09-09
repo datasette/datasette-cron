@@ -9,9 +9,33 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
+from datasette.telemetry import linked_root_span_kwargs
+from opentelemetry.trace import Status, StatusCode
+
 from .internal_db import InternalDB
 from .models import CronTask
 from .schedules import add_jitter, parse_schedule, schedule_from_db
+from .telemetry import tracer
+from .telemetry_registry import (
+    ATTEMPT,
+    ATTEMPT_SPAN,
+    ATTEMPTS,
+    BACKOFF,
+    BACKOFF_DELAY,
+    CODE_FUNCTION,
+    ERROR_TYPE,
+    HANDLER,
+    HANDLER_ASYNC,
+    LAG,
+    MAX_ATTEMPTS,
+    PLUGIN,
+    RUN,
+    RUN_ID,
+    SCHEDULED_AT,
+    STATUS,
+    TASK,
+    TRIGGER,
+)
 
 logger = logging.getLogger("datasette_cron")
 
@@ -83,7 +107,13 @@ class Scheduler:
         return any(not t.done() for t in self._running_tasks.get(name, ()))
 
     def _spawn_execution(
-        self, task: CronTask, handler_fn: Callable[..., Any], *, force: bool = False
+        self,
+        task: CronTask,
+        handler_fn: Callable[..., Any],
+        *,
+        force: bool = False,
+        scheduled_at: str | None = None,
+        now: datetime | None = None,
     ) -> bool:
         """Spawn _execute_task, respecting overlap_policy unless force=True.
 
@@ -100,8 +130,20 @@ class Scheduler:
                 for t in running:
                     t.cancel()
 
+        # Capture the run span's root-with-link kwargs here, not inside
+        # _execute_task: this is the one place that is definitely still
+        # inside the causing span (the tick span, or core's HTTP request
+        # span for a manual trigger).
+        run_span_kwargs = linked_root_span_kwargs()
         exec_task = asyncio.get_running_loop().create_task(
-            self._execute_task(task, handler_fn)
+            self._execute_task(
+                task,
+                handler_fn,
+                trigger="manual" if force else "scheduled",
+                run_span_kwargs=run_span_kwargs,
+                scheduled_at=scheduled_at,
+                now=now,
+            )
         )
         self._running_tasks.setdefault(name, set()).add(exec_task)
         return True
@@ -269,7 +311,9 @@ class Scheduler:
                 await self.internal_db.update_task(name, enabled=0, last_status="error")
                 continue
 
-            started = self._spawn_execution(task, handler_fn)
+            started = self._spawn_execution(
+                task, handler_fn, scheduled_at=task.next_run_at, now=now
+            )
             if not started:
                 logger.debug(
                     "Skipped %r: overlap_policy=%s and a run is in flight",
@@ -296,7 +340,14 @@ class Scheduler:
             await self.internal_db.update_next_run(name, next_run.isoformat())
 
     async def _execute_task(
-        self, task: CronTask, handler_fn: Callable[..., Any]
+        self,
+        task: CronTask,
+        handler_fn: Callable[..., Any],
+        *,
+        trigger: str = "scheduled",
+        run_span_kwargs: dict | None = None,
+        scheduled_at: str | None = None,
+        now: datetime | None = None,
     ) -> None:
         name = task.name
         config = (
@@ -304,43 +355,124 @@ class Scheduler:
         )
         max_attempts = task.retry_max + 1
         backoff_strategy = task.retry_backoff
+        plugin, _, _ = task.handler.partition(":")
+        if run_span_kwargs is None:
+            # create_task copied the context, so the causing span is still
+            # current here too; the helper discards it and keeps the link.
+            run_span_kwargs = linked_root_span_kwargs()
 
         try:
-            for attempt in range(1, max_attempts + 1):
-                run_id = await self.internal_db.record_run_start(name, attempt)
-                start_time = time.monotonic()
+            with tracer.start_as_current_span(RUN, **run_span_kwargs) as run_span:
+                run_span.set_attribute(TASK, name)
+                run_span.set_attribute(HANDLER, task.handler)
+                run_span.set_attribute(PLUGIN, plugin)
+                run_span.set_attribute(
+                    CODE_FUNCTION,
+                    "{}.{}".format(
+                        getattr(handler_fn, "__module__", "<unknown>"),
+                        getattr(handler_fn, "__qualname__", repr(handler_fn)),
+                    ),
+                )
+                run_span.set_attribute(TRIGGER, trigger)
+                run_span.set_attribute(MAX_ATTEMPTS, max_attempts)
+                if scheduled_at is not None:
+                    run_span.set_attribute(SCHEDULED_AT, scheduled_at)
+                    lag = (
+                        (now or _utcnow()) - datetime.fromisoformat(scheduled_at)
+                    ).total_seconds()
+                    run_span.set_attribute(LAG, max(lag, 0.0))
+                status = "error"
+                error_type: str | None = None
+                error_message: str | None = None
+                attempts_made = 0
                 try:
-                    result = handler_fn(self.datasette, config)
-                    if asyncio.iscoroutine(result):
-                        await result
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    await self.internal_db.record_run_success(run_id, duration_ms)
-                    await self.internal_db.mark_last_run(name, "success")
-                    return
-                except asyncio.CancelledError:
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    await self.internal_db.record_run_error(
-                        run_id, "Cancelled", duration_ms
-                    )
-                    raise
-                except Exception as e:
-                    duration_ms = int((time.monotonic() - start_time) * 1000)
-                    await self.internal_db.record_run_error(run_id, str(e), duration_ms)
-                    logger.warning(
-                        "Task %r attempt %d/%d failed: %s",
-                        name,
-                        attempt,
-                        max_attempts,
-                        e,
-                    )
-                    if attempt < max_attempts:
-                        delay = self._backoff_delay(backoff_strategy, attempt)
-                        await asyncio.sleep(delay)
-                    else:
-                        logger.error(
-                            "Task %r failed after %d attempts", name, max_attempts
-                        )
-                        await self.internal_db.mark_last_run(name, "error")
+                    for attempt in range(1, max_attempts + 1):
+                        attempts_made = attempt
+                        with tracer.start_as_current_span(ATTEMPT_SPAN) as attempt_span:
+                            attempt_span.set_attribute(ATTEMPT, attempt)
+                            run_id = await self.internal_db.record_run_start(
+                                name, attempt
+                            )
+                            attempt_span.set_attribute(RUN_ID, run_id)
+                            start_time = time.monotonic()
+                            try:
+                                result = handler_fn(self.datasette, config)
+                                is_async = asyncio.iscoroutine(result)
+                                attempt_span.set_attribute(HANDLER_ASYNC, is_async)
+                                if is_async:
+                                    await result
+                                duration_ms = int(
+                                    (time.monotonic() - start_time) * 1000
+                                )
+                                await self.internal_db.record_run_success(
+                                    run_id, duration_ms
+                                )
+                                await self.internal_db.mark_last_run(name, "success")
+                                status = "success"
+                                return
+                            except asyncio.CancelledError:
+                                duration_ms = int(
+                                    (time.monotonic() - start_time) * 1000
+                                )
+                                status = "cancelled"
+                                error_type = "CancelledError"
+                                error_message = "Cancelled"
+                                attempt_span.set_attribute(ERROR_TYPE, error_type)
+                                # use_span() only handles Exception, and
+                                # CancelledError is a BaseException - the
+                                # operator reading a trace still wants to see
+                                # that the handler did not finish.
+                                attempt_span.set_status(
+                                    Status(StatusCode.ERROR, error_message)
+                                )
+                                await self.internal_db.record_run_error(
+                                    run_id, "Cancelled", duration_ms
+                                )
+                                raise
+                            except Exception as e:
+                                duration_ms = int(
+                                    (time.monotonic() - start_time) * 1000
+                                )
+                                error_type = type(e).__name__
+                                error_message = str(e)
+                                attempt_span.set_attribute(ERROR_TYPE, error_type)
+                                attempt_span.record_exception(e)
+                                attempt_span.set_status(
+                                    Status(StatusCode.ERROR, error_message)
+                                )
+                                await self.internal_db.record_run_error(
+                                    run_id, str(e), duration_ms
+                                )
+                                logger.warning(
+                                    "Task %r attempt %d/%d failed: %s",
+                                    name,
+                                    attempt,
+                                    max_attempts,
+                                    e,
+                                )
+                        # The retry sleep lives outside the attempt span so
+                        # the backoff span is a sibling of the attempts, not
+                        # nested inside a failed one.
+                        if attempt < max_attempts:
+                            delay = self._backoff_delay(backoff_strategy, attempt)
+                            with tracer.start_as_current_span(BACKOFF) as backoff_span:
+                                backoff_span.set_attribute(BACKOFF_DELAY, delay)
+                                await asyncio.sleep(delay)
+                        else:
+                            logger.error(
+                                "Task %r failed after %d attempts", name, max_attempts
+                            )
+                            await self.internal_db.mark_last_run(name, "error")
+                finally:
+                    run_span.set_attribute(ATTEMPTS, attempts_made)
+                    run_span.set_attribute(STATUS, status)
+                    # A failed attempt that was then retried successfully
+                    # leaves the run span clean; the failure is on the
+                    # attempt span.
+                    if status != "success":
+                        if error_type is not None:
+                            run_span.set_attribute(ERROR_TYPE, error_type)
+                        run_span.set_status(Status(StatusCode.ERROR, error_message))
         finally:
             # Remove ourselves from the in-flight set; clean up empty entries.
             current = asyncio.current_task()

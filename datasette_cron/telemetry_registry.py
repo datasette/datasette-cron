@@ -22,21 +22,6 @@ Three things read this module, which is the point of it existing:
 
 from datasette.telemetry_registry import Attribute, MetricName, SpanName
 
-__all__ = [
-    "Attribute",
-    "MetricName",
-    "SpanName",
-    "PLUGIN",
-    "CODE_FUNCTION",
-    "ERROR_TYPE",
-    "TASK",
-    "HANDLER",
-    "STATUS",
-    "TRIGGER",
-    "SPANS",
-    "METRICS",
-]
-
 
 # --- Attributes -----------------------------------------------------------
 #
@@ -80,11 +65,100 @@ TRIGGER = Attribute(
     "What started the run.",
     values={"scheduled", "manual"},
 )
+MAX_ATTEMPTS = Attribute(
+    "datasette_cron.max_attempts",
+    "How many attempts this run was allowed: the task's `retry_max + 1`.",
+)
+ATTEMPTS = Attribute(
+    "datasette_cron.attempts",
+    "How many attempts were actually made, set when the run ends. Less "
+    "than `datasette_cron.max_attempts` when an attempt succeeded early "
+    "or the run was cancelled.",
+)
+SCHEDULED_AT = Attribute(
+    "datasette_cron.scheduled_at",
+    "The `next_run_at` slot the scheduler fired for, as a naive-UTC ISO "
+    "string. Scheduled runs only; a manual trigger has no slot.",
+    optional=True,
+)
+LAG = Attribute(
+    "datasette_cron.lag",
+    "Seconds between `datasette_cron.scheduled_at` and the tick that "
+    "fired it. Scheduled runs only.",
+    optional=True,
+)
+ATTEMPT = Attribute(
+    "datasette_cron.attempt",
+    "1-based attempt number within the run.",
+)
+RUN_ID = Attribute(
+    "datasette_cron.run_id",
+    "The `datasette_cron_runs.id` row recording this attempt, joining the "
+    "trace to the run history the UI shows.",
+)
+HANDLER_ASYNC = Attribute(
+    "datasette_cron.handler.async",
+    "`True` if the handler returned a coroutine. A sync handler blocks "
+    "the event loop for its whole duration, and this attribute is the "
+    "only place that becomes visible.",
+)
+BACKOFF_DELAY = Attribute(
+    "datasette_cron.backoff_delay",
+    "The jittered delay in seconds slept before the next attempt.",
+)
 
 
 # --- Spans ----------------------------------------------------------------
 
-SPANS: tuple[SpanName, ...] = ()
+RUN = SpanName(
+    "datasette_cron.run",
+    "One span per execution of a task, covering every attempt and every "
+    "backoff sleep between them. A **root span** in its own trace, with an "
+    "OpenTelemetry link back to the span that caused it - the "
+    "`datasette_cron.tick` iteration for a scheduled run, core's HTTP "
+    "request span for a manual trigger. A run outlives the tick or request "
+    "that spawned it, so a link records the causation without asserting "
+    "containment (the same shape core uses for `block=False` writes). "
+    "Span status is `ERROR` when the last attempt failed or the run was "
+    "cancelled; a failed attempt that was then retried successfully leaves "
+    "the run span unset, with the failure visible on the attempt span.",
+    (
+        TASK,
+        HANDLER,
+        PLUGIN,
+        CODE_FUNCTION,
+        TRIGGER,
+        MAX_ATTEMPTS,
+        SCHEDULED_AT,
+        LAG,
+        ATTEMPTS,
+        STATUS,
+        ERROR_TYPE,
+    ),
+)
+
+ATTEMPT_SPAN = SpanName(
+    "datasette_cron.attempt",
+    "One attempt at running the handler, child of `datasette_cron.run`. "
+    "Wraps the bookkeeping write that opens the runs-table row, the "
+    "handler call itself, and the write that closes the row - so the "
+    "span's duration is the same start-to-finished window the runs table "
+    "shows, and the handler's own `db.query` spans (core's) nest here "
+    "automatically. Status is `ERROR` on failure or cancellation, with "
+    "the stack trace recorded as an exception event.",
+    (ATTEMPT, RUN_ID, HANDLER_ASYNC, ERROR_TYPE),
+)
+
+BACKOFF = SpanName(
+    "datasette_cron.backoff",
+    "The sleep between two attempts of a retried run, child of "
+    "`datasette_cron.run` and sibling of the attempt spans. Exists so the "
+    "gap in a retried trace is labelled rather than mysterious, and so "
+    "retry timing can be inspected without a metric.",
+    (BACKOFF_DELAY,),
+)
+
+SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF)
 
 
 # --- Metrics --------------------------------------------------------------
