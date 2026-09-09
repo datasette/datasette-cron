@@ -16,6 +16,7 @@ from opentelemetry.trace import Status, StatusCode
 from .internal_db import InternalDB
 from .models import CronTask
 from .schedules import add_jitter, parse_schedule, schedule_from_db
+from . import telemetry
 from .telemetry import tracer
 from .telemetry_registry import (
     ATTEMPT,
@@ -32,7 +33,9 @@ from .telemetry_registry import (
     HANDLER_ASYNC,
     LAG,
     MAX_ATTEMPTS,
+    OVERLAP_POLICY,
     PLUGIN,
+    RETRY,
     RUN,
     RUN_ID,
     SCHEDULED_AT,
@@ -51,6 +54,15 @@ logger = logging.getLogger("datasette_cron")
 def _utcnow() -> datetime:
     """Current UTC time as a naive datetime (matching SQLite's datetime('now'))."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _lag_seconds(next_run_at: str, now: datetime) -> float:
+    """Seconds `now` is past the scheduled `next_run_at` slot, clamped to 0.
+
+    Both sides are naive UTC (`_utcnow` strips tzinfo, and next_run_at is
+    stored that way), so the subtraction is correct.
+    """
+    return max((now - datetime.fromisoformat(next_run_at)).total_seconds(), 0.0)
 
 
 @dataclass
@@ -145,6 +157,7 @@ class Scheduler:
 
         cancelled_in_flight = False
         if running and not force:
+            telemetry.overlaps.add(1, {TASK: name, OVERLAP_POLICY: task.overlap_policy})
             if task.overlap_policy == "skip":
                 return "skipped"
             if task.overlap_policy == "cancel":
@@ -344,6 +357,13 @@ class Scheduler:
             name = task.name
             handler_fn = self.get_handler(task.handler)
 
+            # Lag is recorded for every due task, spawned or not, so an
+            # overlap-starved task still shows its slot drifting.
+            if task.next_run_at:
+                telemetry.run_lag.record(
+                    _lag_seconds(task.next_run_at, now), {TASK: name}
+                )
+
             if not handler_fn:
                 logger.error(
                     "Handler %r not found for task %r (available: %s), disabling",
@@ -412,6 +432,23 @@ class Scheduler:
             # current here too; the helper discards it and keeps the link.
             run_span_kwargs = linked_root_span_kwargs()
 
+        def record_attempt_metrics(outcome: str, attempt: int, elapsed: float) -> None:
+            # Called while the attempt span is current, so the SDK can
+            # attach an exemplar linking the histogram bucket to the trace.
+            telemetry.run_duration.record(
+                elapsed,
+                {TASK: name, HANDLER: task.handler, STATUS: outcome, TRIGGER: trigger},
+            )
+            telemetry.attempts.add(
+                1,
+                {
+                    TASK: name,
+                    HANDLER: task.handler,
+                    STATUS: outcome,
+                    RETRY: attempt > 1,
+                },
+            )
+
         try:
             with tracer.start_as_current_span(RUN, **run_span_kwargs) as run_span:
                 run_span.set_attribute(TASK, name)
@@ -428,10 +465,9 @@ class Scheduler:
                 run_span.set_attribute(MAX_ATTEMPTS, max_attempts)
                 if scheduled_at is not None:
                     run_span.set_attribute(SCHEDULED_AT, scheduled_at)
-                    lag = (
-                        (now or _utcnow()) - datetime.fromisoformat(scheduled_at)
-                    ).total_seconds()
-                    run_span.set_attribute(LAG, max(lag, 0.0))
+                    run_span.set_attribute(
+                        LAG, _lag_seconds(scheduled_at, now or _utcnow())
+                    )
                 status = "error"
                 error_type: str | None = None
                 error_message: str | None = None
@@ -452,9 +488,9 @@ class Scheduler:
                                 attempt_span.set_attribute(HANDLER_ASYNC, is_async)
                                 if is_async:
                                     await result
-                                duration_ms = int(
-                                    (time.monotonic() - start_time) * 1000
-                                )
+                                elapsed = time.monotonic() - start_time
+                                duration_ms = int(elapsed * 1000)
+                                record_attempt_metrics("success", attempt, elapsed)
                                 await self.internal_db.record_run_success(
                                     run_id, duration_ms
                                 )
@@ -462,9 +498,9 @@ class Scheduler:
                                 status = "success"
                                 return
                             except asyncio.CancelledError:
-                                duration_ms = int(
-                                    (time.monotonic() - start_time) * 1000
-                                )
+                                elapsed = time.monotonic() - start_time
+                                duration_ms = int(elapsed * 1000)
+                                record_attempt_metrics("cancelled", attempt, elapsed)
                                 status = "cancelled"
                                 error_type = "CancelledError"
                                 error_message = "Cancelled"
@@ -481,9 +517,9 @@ class Scheduler:
                                 )
                                 raise
                             except Exception as e:
-                                duration_ms = int(
-                                    (time.monotonic() - start_time) * 1000
-                                )
+                                elapsed = time.monotonic() - start_time
+                                duration_ms = int(elapsed * 1000)
+                                record_attempt_metrics("error", attempt, elapsed)
                                 error_type = type(e).__name__
                                 error_message = str(e)
                                 attempt_span.set_attribute(ERROR_TYPE, error_type)

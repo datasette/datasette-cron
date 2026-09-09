@@ -20,7 +20,13 @@ Three things read this module, which is the point of it existing:
    describing something that no longer exists.
 """
 
-from datasette.telemetry_registry import Attribute, MetricName, SpanName
+from datasette.telemetry_registry import (
+    COUNTER,
+    HISTOGRAM,
+    Attribute,
+    MetricName,
+    SpanName,
+)
 
 
 # --- Attributes -----------------------------------------------------------
@@ -135,6 +141,18 @@ HANDLERS = Attribute(
     "datasette_cron.handlers",
     "Number of handlers the plugin returned.",
 )
+RETRY = Attribute(
+    "datasette_cron.retry",
+    '`True` for attempt 2 onwards - separating "flaky, recovers" from '
+    '"broken" in the attempts counter. A boolean, so bounded without a '
+    "declared enum.",
+)
+OVERLAP_POLICY = Attribute(
+    "datasette_cron.overlap_policy",
+    "What the task's overlap policy did about the run already in flight: "
+    "`skip` dropped the new run, `cancel` cancelled the old one.",
+    values={"skip", "cancel"},
+)
 
 
 # --- Spans ----------------------------------------------------------------
@@ -222,4 +240,64 @@ SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF, TICK, REGISTER_HANDLE
 
 # --- Metrics --------------------------------------------------------------
 
-METRICS: tuple[MetricName, ...] = ()
+# Histograms are in seconds with explicit boundaries, following core's
+# reasoning (OTel's default boundaries assume milliseconds). Core's shared
+# DURATION_BUCKETS tops out at 10 s, tuned for SQLite reads; cron jobs run
+# for minutes, so these boundary lists are deliberately our own, reaching
+# an hour. Published in the generated docs - an operator writing a
+# histogram_quantile() query needs to know them.
+RUN_DURATION_BUCKETS = (0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300, 900, 3600)
+LAG_BUCKETS = (0.1, 0.5, 1, 5, 10, 30, 60, 300, 900, 3600)
+
+M_RUN_DURATION = MetricName(
+    "datasette_cron.run.duration",
+    HISTOGRAM,
+    "s",
+    "Duration of one attempt: the handler call only, the same number "
+    "written to the runs table's `duration_ms`. A retried run records two "
+    "measurements; backoff sleeps are visible as their own span, not "
+    "folded in here. By `datasette_cron.task` this is the dashboard; by "
+    "`datasette_cron.status` it separates a slow success from a slow "
+    "failure. Recorded inside the attempt span, so exemplars link each "
+    "bucket to a trace.",
+    (TASK, HANDLER, STATUS, TRIGGER),
+    buckets=RUN_DURATION_BUCKETS,
+)
+
+M_RUN_LAG = MetricName(
+    "datasette_cron.run.lag",
+    HISTOGRAM,
+    "s",
+    "Seconds between a task's scheduled slot (`next_run_at`) and the tick "
+    "that fired it - scheduler promptness. It climbs when a sync handler "
+    "starves the event loop, when thread-pool contention slows the due "
+    "query, or after a restart. Recorded once per due task, spawned or "
+    "not, so an overlap-starved task still shows its slot drifting.",
+    (TASK,),
+    buckets=LAG_BUCKETS,
+)
+
+M_ATTEMPTS = MetricName(
+    "datasette_cron.attempts",
+    COUNTER,
+    "{attempt}",
+    "Attempts at running a task's handler, by outcome. With "
+    "`datasette_cron.status=error` per task this is the alert; with "
+    '`datasette_cron.retry=true` it separates "flaky, recovers" from '
+    '"broken". Deliberately no `error.type` dimension: a handler can '
+    "raise anything, so the class name is not a bounded value set here.",
+    (TASK, HANDLER, STATUS, RETRY),
+)
+
+M_OVERLAPS = MetricName(
+    "datasette_cron.overlaps",
+    COUNTER,
+    "{run}",
+    "Due runs that found an earlier run of the same task still in flight, "
+    "with what the overlap policy did about it. Sustained above zero for "
+    "a task means its runtime exceeds its interval, which "
+    "`datasette_cron.run.duration` alone does not tell you.",
+    (TASK, OVERLAP_POLICY),
+)
+
+METRICS: tuple[MetricName, ...] = (M_RUN_DURATION, M_RUN_LAG, M_ATTEMPTS, M_OVERLAPS)
