@@ -33,7 +33,40 @@ from opentelemetry import trace as otel_trace
 # 1.30). Importing the URL keeps the two libraries making the same claim.
 from datasette.telemetry import SCHEMA_URL
 
+from .telemetry_registry import M_ATTEMPTS, M_OVERLAPS, M_RUN_DURATION, M_RUN_LAG
+
 __version__ = version("datasette-cron")
 
 tracer = otel_trace.get_tracer("datasette_cron", __version__, schema_url=SCHEMA_URL)
 meter = otel_metrics.get_meter("datasette_cron", __version__, schema_url=SCHEMA_URL)
+
+# Module-level instruments are safe before any provider exists: _ProxyMeter
+# instruments forward retroactively once one is installed. The registry
+# descriptions are Markdown for the generated docs; the exported
+# description strings here are short plain sentences.
+
+run_duration = meter.create_histogram(
+    M_RUN_DURATION,
+    unit=M_RUN_DURATION.unit,
+    description="Duration of one attempt of a cron task run, the handler call only",
+    explicit_bucket_boundaries_advisory=M_RUN_DURATION.buckets,
+)
+
+run_lag = meter.create_histogram(
+    M_RUN_LAG,
+    unit=M_RUN_LAG.unit,
+    description="Seconds between a task's scheduled slot and the tick that fired it",
+    explicit_bucket_boundaries_advisory=M_RUN_LAG.buckets,
+)
+
+attempts = meter.create_counter(
+    M_ATTEMPTS,
+    unit=M_ATTEMPTS.unit,
+    description="Attempts at running a cron task's handler, by outcome",
+)
+
+overlaps = meter.create_counter(
+    M_OVERLAPS,
+    unit=M_OVERLAPS.unit,
+    description="Due runs that found an earlier run of the same task in flight",
+)

@@ -13,6 +13,7 @@ from datasette.plugins import pm
 from datasette.telemetry import SCHEMA_URL, linked_root_span_kwargs
 from opentelemetry.trace import StatusCode
 
+from datasette_cron.scheduler import _lag_seconds, _utcnow
 from datasette_cron.telemetry import tracer
 
 PAST = "2000-01-01T00:00:00"
@@ -545,5 +546,158 @@ async def test_run_span_is_root_with_link_not_child(otel_spans):
     assert run.parent is None
     assert len(run.links) == 1
     assert run.links[0].context.span_id == outer.get_span_context().span_id
+
+    await scheduler.shutdown()
+
+
+# --- metrics: run.duration, run.lag, attempts, overlaps -------------------
+
+
+def test_lag_seconds():
+    now = _utcnow()
+    assert _lag_seconds(PAST, now) > 0
+    assert _lag_seconds("2099-01-01T00:00:00", now) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_metrics_successful_scheduled_run(otel_metrics):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="m1", handler="test:noop", schedule={"interval": 99999}
+    )
+    await scheduler.internal_db.update_next_run("m1", PAST)
+
+    await scheduler._tick()
+    await _drain(scheduler)
+
+    otel_metrics.collect()
+    duration = otel_metrics.point(
+        "datasette_cron.run.duration",
+        {
+            "datasette_cron.task": "m1",
+            "datasette_cron.handler": "test:noop",
+            "datasette_cron.status": "success",
+            "datasette_cron.trigger": "scheduled",
+        },
+    )
+    assert duration.count == 1
+    lag = otel_metrics.point("datasette_cron.run.lag", {"datasette_cron.task": "m1"})
+    assert lag.count == 1
+    assert lag.sum >= 0
+    attempt_point = otel_metrics.point(
+        "datasette_cron.attempts",
+        {
+            "datasette_cron.task": "m1",
+            "datasette_cron.status": "success",
+            "datasette_cron.retry": False,
+        },
+    )
+    assert attempt_point.value == 1
+    assert otel_metrics.points("datasette_cron.overlaps") == []
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_metrics_retry(otel_metrics, monkeypatch):
+    ds, scheduler = await _make_scheduler()
+    monkeypatch.setattr(
+        type(scheduler), "_backoff_delay", staticmethod(lambda strategy, attempt: 0.01)
+    )
+    calls = 0
+
+    async def flaky(datasette, config):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("first attempt fails")
+
+    scheduler.register_handlers("test", {"flaky": flaky})
+    await scheduler.add_task(
+        name="m2",
+        handler="test:flaky",
+        schedule={"interval": 99999},
+        retry={"max_retries": 1},
+    )
+
+    await scheduler.trigger_task("m2")
+    await _drain(scheduler)
+
+    otel_metrics.collect()
+    failed = otel_metrics.point(
+        "datasette_cron.attempts",
+        {
+            "datasette_cron.task": "m2",
+            "datasette_cron.status": "error",
+            "datasette_cron.retry": False,
+        },
+    )
+    assert failed.value == 1
+    retried = otel_metrics.point(
+        "datasette_cron.attempts",
+        {
+            "datasette_cron.task": "m2",
+            "datasette_cron.status": "success",
+            "datasette_cron.retry": True,
+        },
+    )
+    assert retried.value == 1
+    durations = otel_metrics.points(
+        "datasette_cron.run.duration", {"datasette_cron.task": "m2"}
+    )
+    assert sorted(p.attributes["datasette_cron.status"] for p in durations) == [
+        "error",
+        "success",
+    ]
+    assert all(p.attributes["datasette_cron.trigger"] == "manual" for p in durations)
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_metrics_overlap_skip_and_cancel(otel_metrics):
+    ds, scheduler = await _make_scheduler()
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow(datasette, config):
+        started.set()
+        await release.wait()
+
+    scheduler.register_handlers("test", {"slow": slow})
+    await scheduler.add_task(
+        name="m3", handler="test:slow", schedule={"interval": 99999}, overlap="skip"
+    )
+    await scheduler.add_task(
+        name="m4", handler="test:slow", schedule={"interval": 99999}, overlap="cancel"
+    )
+
+    for name in ("m3", "m4"):
+        await scheduler.internal_db.update_next_run(name, PAST)
+    await scheduler._tick()
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    for name in ("m3", "m4"):
+        await scheduler.internal_db.update_next_run(name, PAST)
+    await scheduler._tick()
+
+    release.set()
+    await _drain(scheduler)
+
+    otel_metrics.collect()
+    skip = otel_metrics.point(
+        "datasette_cron.overlaps",
+        {"datasette_cron.task": "m3", "datasette_cron.overlap_policy": "skip"},
+    )
+    assert skip.value == 1
+    cancel = otel_metrics.point(
+        "datasette_cron.overlaps",
+        {"datasette_cron.task": "m4", "datasette_cron.overlap_policy": "cancel"},
+    )
+    assert cancel.value == 1
 
     await scheduler.shutdown()
