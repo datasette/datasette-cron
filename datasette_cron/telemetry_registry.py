@@ -106,6 +106,31 @@ BACKOFF_DELAY = Attribute(
     "datasette_cron.backoff_delay",
     "The jittered delay in seconds slept before the next attempt.",
 )
+DUE = Attribute(
+    "datasette_cron.due",
+    "How many tasks `get_due_tasks` returned for this tick.",
+)
+SPAWNED = Attribute(
+    "datasette_cron.spawned",
+    "How many executions this tick started.",
+)
+SKIPPED = Attribute(
+    "datasette_cron.skipped",
+    "Due tasks skipped because `overlap_policy=skip` found a run already in flight.",
+)
+CANCELLED = Attribute(
+    "datasette_cron.cancelled",
+    "Due tasks whose in-flight runs this tick cancelled because "
+    "`overlap_policy=cancel`, before starting the new run.",
+)
+DISABLED = Attribute(
+    "datasette_cron.disabled",
+    "Due tasks this tick disabled because their handler is not registered.",
+)
+SLEEP = Attribute(
+    "datasette_cron.sleep",
+    "Seconds the loop decided to wait before the next tick, capped at 60.",
+)
 
 
 # --- Spans ----------------------------------------------------------------
@@ -158,7 +183,25 @@ BACKOFF = SpanName(
     (BACKOFF_DELAY,),
 )
 
-SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF)
+TICK = SpanName(
+    "datasette_cron.tick",
+    "One iteration of the scheduler loop: reading due tasks, spawning "
+    "executions and computing the next sleep. A root span - the loop runs "
+    "as a supervised background task with no ambient span - and the "
+    "parent every loop-owned `db.query` nests under. Emitted **at least "
+    "once a minute per process**, including no-op ticks, with the outcome "
+    "attributes saying so: suppressing quiet ticks would destroy the "
+    '"is the loop still running?" signal. Operators who find one span a '
+    "minute noisy can drop it by name in a `SpanProcessor` (or a sampler "
+    "keyed on span name), filtering for spans named `datasette_cron.tick` "
+    "with no error status. Status is `ERROR` when the tick raised - the "
+    "loop logs and continues, and this span is how an operator notices "
+    "that happening repeatedly. The wait between ticks and the error "
+    "sleep are outside the span, so its duration means work.",
+    (DUE, SPAWNED, SKIPPED, CANCELLED, DISABLED, SLEEP),
+)
+
+SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF, TICK)
 
 
 # --- Metrics --------------------------------------------------------------

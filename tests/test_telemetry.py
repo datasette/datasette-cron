@@ -305,6 +305,150 @@ async def test_handler_queries_nest_under_attempt_span(otel_spans):
     await scheduler.shutdown()
 
 
+# --- datasette_cron.tick --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_tick_span_emitted_by_loop(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+    otel_spans.clear()
+
+    await ds.start_background_tasks()
+    await asyncio.sleep(0.3)
+    await ds.invoke_shutdown()
+
+    ticks = _spans_named(otel_spans, "datasette_cron.tick")
+    assert ticks, "expected at least one tick span"
+    first = ticks[0]
+    assert first.parent is None
+    assert first.attributes["datasette_cron.due"] == 1
+    assert first.attributes["datasette_cron.spawned"] == 1
+    assert first.attributes["datasette_cron.skipped"] == 0
+    assert first.attributes["datasette_cron.cancelled"] == 0
+    assert first.attributes["datasette_cron.disabled"] == 0
+    assert first.attributes["datasette_cron.sleep"] > 0
+    assert first.status.status_code is StatusCode.UNSET
+
+    # The loop's own queries nest under the tick span instead of being
+    # orphan roots.
+    tick_children = [
+        s
+        for s in _spans_named(otel_spans, "db.query")
+        if s.parent is not None and s.parent.span_id == first.context.span_id
+    ]
+    assert tick_children
+
+    # The scheduled run's link points back at the tick that spawned it.
+    run = _one_span(otel_spans, "datasette_cron.run")
+    assert len(run.links) == 1
+    assert run.links[0].context.span_id == first.context.span_id
+
+
+@pytest.mark.asyncio
+async def test_tick_span_error_status(otel_spans, monkeypatch):
+    ds, scheduler = await _make_scheduler()
+
+    async def explode():
+        raise RuntimeError("db unavailable")
+
+    monkeypatch.setattr(scheduler.internal_db, "get_due_tasks", explode)
+    otel_spans.clear()
+
+    await ds.start_background_tasks()
+    await asyncio.sleep(0.1)
+    await ds.invoke_shutdown()
+
+    tick = _spans_named(otel_spans, "datasette_cron.tick")[0]
+    assert tick.status.status_code is StatusCode.ERROR
+    assert "datasette_cron.sleep" not in tick.attributes
+
+
+@pytest.mark.asyncio
+async def test_tick_stats_overlap_skip():
+    ds, scheduler = await _make_scheduler()
+    in_handler = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow(datasette, config):
+        in_handler.set()
+        await release.wait()
+
+    scheduler.register_handlers("test", {"slow": slow})
+    await scheduler.add_task(
+        name="t", handler="test:slow", schedule={"interval": 99999}, overlap="skip"
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+
+    stats = await scheduler._tick()
+    assert (stats.due, stats.spawned, stats.skipped) == (1, 1, 0)
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+
+    await scheduler.internal_db.update_next_run("t", PAST)
+    stats = await scheduler._tick()
+    assert (stats.due, stats.spawned, stats.skipped) == (1, 0, 1)
+
+    release.set()
+    await _drain(scheduler)
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_stats_overlap_cancel():
+    ds, scheduler = await _make_scheduler()
+    in_handler = asyncio.Event()
+
+    async def slow(datasette, config):
+        in_handler.set()
+        await asyncio.sleep(60)
+
+    scheduler.register_handlers("test", {"slow": slow})
+    await scheduler.add_task(
+        name="t", handler="test:slow", schedule={"interval": 99999}, overlap="cancel"
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+
+    stats = await scheduler._tick()
+    assert (stats.spawned, stats.cancelled) == (1, 0)
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+
+    await scheduler.internal_db.update_next_run("t", PAST)
+    stats = await scheduler._tick()
+    assert (stats.due, stats.spawned, stats.cancelled) == (1, 1, 1)
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_stats_disabled_missing_handler():
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    await scheduler.internal_db.update_next_run("t", PAST)
+    scheduler._handler_registry.clear()
+
+    stats = await scheduler._tick()
+    assert (stats.due, stats.spawned, stats.disabled) == (1, 0, 1)
+    task = await scheduler.internal_db.get_task("t")
+    assert task.enabled is False
+
+    await scheduler.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_run_span_is_root_with_link_not_child(otel_spans):
     ds, scheduler = await _make_scheduler()
