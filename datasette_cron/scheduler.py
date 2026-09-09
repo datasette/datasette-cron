@@ -6,6 +6,7 @@ import logging
 import random
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -22,7 +23,10 @@ from .telemetry_registry import (
     ATTEMPTS,
     BACKOFF,
     BACKOFF_DELAY,
+    CANCELLED,
     CODE_FUNCTION,
+    DISABLED,
+    DUE,
     ERROR_TYPE,
     HANDLER,
     HANDLER_ASYNC,
@@ -32,8 +36,12 @@ from .telemetry_registry import (
     RUN,
     RUN_ID,
     SCHEDULED_AT,
+    SKIPPED,
+    SLEEP,
+    SPAWNED,
     STATUS,
     TASK,
+    TICK,
     TRIGGER,
 )
 
@@ -43,6 +51,17 @@ logger = logging.getLogger("datasette_cron")
 def _utcnow() -> datetime:
     """Current UTC time as a naive datetime (matching SQLite's datetime('now'))."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+@dataclass
+class TickStats:
+    """What one scheduler tick decided, recorded on the tick span."""
+
+    due: int = 0
+    spawned: int = 0
+    skipped: int = 0
+    cancelled: int = 0
+    disabled: int = 0
 
 
 class Scheduler:
@@ -114,21 +133,24 @@ class Scheduler:
         force: bool = False,
         scheduled_at: str | None = None,
         now: datetime | None = None,
-    ) -> bool:
+    ) -> str:
         """Spawn _execute_task, respecting overlap_policy unless force=True.
 
-        Returns True if execution started, False if blocked by overlap.
-        Manual triggers pass force=True so the user's "Run now" always fires.
+        Returns the outcome: "started", "skipped" (blocked by overlap), or
+        "cancelled" (started after cancelling in-flight runs). Manual
+        triggers pass force=True so the user's "Run now" always fires.
         """
         name = task.name
         running = {t for t in self._running_tasks.get(name, ()) if not t.done()}
 
+        cancelled_in_flight = False
         if running and not force:
             if task.overlap_policy == "skip":
-                return False
+                return "skipped"
             if task.overlap_policy == "cancel":
                 for t in running:
                     t.cancel()
+                cancelled_in_flight = True
 
         # Capture the run span's root-with-link kwargs here, not inside
         # _execute_task: this is the one place that is definitely still
@@ -146,7 +168,7 @@ class Scheduler:
             )
         )
         self._running_tasks.setdefault(name, set()).add(exec_task)
-        return True
+        return "cancelled" if cancelled_in_flight else "started"
 
     # ---- Public Task CRUD API ----
 
@@ -269,20 +291,40 @@ class Scheduler:
             "Scheduler loop started, handlers: %s", list(self._handler_registry.keys())
         )
         while not self._shutting_down:
-            # Clear wake event before tick so any wake() during tick is not lost
+            # Clear wake event before tick so any wake() during tick is not
+            # lost.
             self._wake_event.clear()
 
-            try:
-                await self._tick()
-            except asyncio.CancelledError:
-                break
-            except Exception:
-                logger.exception("Error in scheduler tick")
+            # The wait on the wake event and the error sleep both stay
+            # outside the span, so its duration means "work". The span is
+            # emitted even for a no-op tick: it is the parent that stops the
+            # loop's own queries being orphan roots, and one-span-a-minute
+            # is the "is the loop alive?" signal.
+            sleep_seconds: float | None = None
+            with tracer.start_as_current_span(TICK) as tick_span:
+                try:
+                    stats = await self._tick()
+                except asyncio.CancelledError:
+                    break
+                except Exception:
+                    logger.exception("Error in scheduler tick")
+                    # Caught here rather than escaping the block, so set the
+                    # status by hand; the error sleep happens below, outside
+                    # the span.
+                    tick_span.set_status(Status(StatusCode.ERROR))
+                else:
+                    tick_span.set_attribute(DUE, stats.due)
+                    tick_span.set_attribute(SPAWNED, stats.spawned)
+                    tick_span.set_attribute(SKIPPED, stats.skipped)
+                    tick_span.set_attribute(CANCELLED, stats.cancelled)
+                    tick_span.set_attribute(DISABLED, stats.disabled)
+                    # Sleep until next due task or max 60s
+                    sleep_seconds = await self._compute_sleep()
+                    tick_span.set_attribute(SLEEP, sleep_seconds)
+
+            if sleep_seconds is None:
                 await asyncio.sleep(5)
                 continue
-
-            # Sleep until next due task or max 60s
-            sleep_seconds = await self._compute_sleep()
             try:
                 await asyncio.wait_for(self._wake_event.wait(), timeout=sleep_seconds)
             except asyncio.TimeoutError:
@@ -291,11 +333,12 @@ class Scheduler:
                 break
         logger.info("Scheduler loop stopped")
 
-    async def _tick(self, now: datetime | None = None) -> None:
+    async def _tick(self, now: datetime | None = None) -> TickStats:
         # `now` is injectable for tests; production always uses wall-clock.
         if now is None:
             now = _utcnow()
         due_tasks = await self.internal_db.get_due_tasks()
+        stats = TickStats(due=len(due_tasks))
 
         for task in due_tasks:
             name = task.name
@@ -309,17 +352,23 @@ class Scheduler:
                     list(self._handler_registry.keys()),
                 )
                 await self.internal_db.update_task(name, enabled=0, last_status="error")
+                stats.disabled += 1
                 continue
 
-            started = self._spawn_execution(
+            outcome = self._spawn_execution(
                 task, handler_fn, scheduled_at=task.next_run_at, now=now
             )
-            if not started:
+            if outcome == "skipped":
+                stats.skipped += 1
                 logger.debug(
                     "Skipped %r: overlap_policy=%s and a run is in flight",
                     name,
                     task.overlap_policy,
                 )
+            else:
+                stats.spawned += 1
+                if outcome == "cancelled":
+                    stats.cancelled += 1
 
             # Advance next_run_at regardless of whether we spawned — a skipped
             # run still consumes its scheduling slot.
@@ -338,6 +387,8 @@ class Scheduler:
             )
             next_run = add_jitter(sched.next_run(now), sched)
             await self.internal_db.update_next_run(name, next_run.isoformat())
+
+        return stats
 
     async def _execute_task(
         self,
