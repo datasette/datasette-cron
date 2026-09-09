@@ -7,7 +7,9 @@ conftest.py.
 import asyncio
 
 import pytest
+from datasette import hookimpl
 from datasette.app import Datasette
+from datasette.plugins import pm
 from datasette.telemetry import SCHEMA_URL, linked_root_span_kwargs
 from opentelemetry.trace import StatusCode
 
@@ -301,6 +303,78 @@ async def test_handler_queries_nest_under_attempt_span(otel_spans):
     )
     run = _one_span(otel_spans, "datasette_cron.run")
     assert all(s.context.trace_id == run.context.trace_id for s in children)
+
+    await scheduler.shutdown()
+
+
+# --- datasette_cron.register_handlers -------------------------------------
+
+
+def _register_handlers_span_for(otel_spans, plugin_name):
+    spans = [
+        s
+        for s in _spans_named(otel_spans, "datasette_cron.register_handlers")
+        if s.attributes.get("datasette.plugin") == plugin_name
+    ]
+    assert len(spans) == 1
+    return spans[0]
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_span(otel_spans):
+    class TwoHandlersPlugin:
+        @staticmethod
+        @hookimpl
+        def cron_register_handlers(datasette):
+            async def one(datasette, config):
+                pass
+
+            async def two(datasette, config):
+                pass
+
+            return {"one": one, "two": two}
+
+    pm.register(TwoHandlersPlugin, name="test_two_handlers_plugin")
+    try:
+        ds, scheduler = await _make_scheduler()
+    finally:
+        pm.unregister(TwoHandlersPlugin, name="test_two_handlers_plugin")
+
+    span = _register_handlers_span_for(otel_spans, "TwoHandlersPlugin")
+    assert span.attributes["datasette_cron.handlers"] == 2
+    assert span.status.status_code is StatusCode.UNSET
+    assert "TwoHandlersPlugin:one" in scheduler.list_handlers()
+
+    # Child of core's startup span, not a root.
+    startup = _one_span(otel_spans, "datasette.startup")
+    assert span.parent is not None
+    assert span.parent.span_id == startup.context.span_id
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_register_handlers_span_plugin_raises(otel_spans):
+    class BrokenPlugin:
+        @staticmethod
+        @hookimpl
+        def cron_register_handlers(datasette):
+            raise RuntimeError("registration broken")
+
+    pm.register(BrokenPlugin, name="test_broken_plugin")
+    try:
+        ds, scheduler = await _make_scheduler()
+    finally:
+        pm.unregister(BrokenPlugin, name="test_broken_plugin")
+
+    # Startup completed despite the raise.
+    assert scheduler is not None
+
+    span = _register_handlers_span_for(otel_spans, "BrokenPlugin")
+    assert span.status.status_code is StatusCode.ERROR
+    assert span.attributes["error.type"] == "RuntimeError"
+    assert any(e.name == "exception" for e in span.events)
+    assert "datasette_cron.handlers" not in span.attributes
 
     await scheduler.shutdown()
 

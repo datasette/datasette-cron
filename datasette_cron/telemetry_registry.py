@@ -131,6 +131,10 @@ SLEEP = Attribute(
     "datasette_cron.sleep",
     "Seconds the loop decided to wait before the next tick, capped at 60.",
 )
+HANDLERS = Attribute(
+    "datasette_cron.handlers",
+    "Number of handlers the plugin returned.",
+)
 
 
 # --- Spans ----------------------------------------------------------------
@@ -201,7 +205,19 @@ TICK = SpanName(
     (DUE, SPAWNED, SKIPPED, CANCELLED, DISABLED, SLEEP),
 )
 
-SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF, TICK)
+REGISTER_HANDLERS = SpanName(
+    "datasette_cron.register_handlers",
+    "One plugin's `cron_register_handlers` implementation running during "
+    "the `startup` hook. Child of whatever is current - core's "
+    "`datasette.startup` span today. The registration loop swallows and "
+    "logs a plugin's exception so one buggy plugin cannot take down the "
+    "scheduler; a red span in the startup trace is the signal that log "
+    "line is not, because a plugin that fails here boots a Datasette "
+    "whose tasks silently get disabled on first tick.",
+    (PLUGIN, HANDLERS, ERROR_TYPE),
+)
+
+SPANS: tuple[SpanName, ...] = (RUN, ATTEMPT_SPAN, BACKOFF, TICK, REGISTER_HANDLERS)
 
 
 # --- Metrics --------------------------------------------------------------
