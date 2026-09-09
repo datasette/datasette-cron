@@ -32,3 +32,5 @@ class CronRun:
     error_message: str | None
     attempt: int
     duration_ms: int | None
+    trace_id: str | None
+    span_id: str | None

@@ -33,6 +33,10 @@ class RunSummary(BaseModel):
     error_message: str | None
     attempt: int
     duration_ms: int | None
+    # OpenTelemetry ids for the attempt, lowercase hex; None when no
+    # tracing provider was installed while the run executed.
+    trace_id: str | None
+    span_id: str | None
 
 
 def task_to_summary(task: CronTask) -> TaskSummary:
@@ -63,6 +67,9 @@ class IndexPageData(BaseModel):
 class DetailPageData(BaseModel):
     task: TaskSummary
     runs: list[RunSummary]
+    # URL template turning a run's trace id into a tracing-UI link, from
+    # the `trace_url` plugin config; None when unconfigured.
+    trace_url: str | None
 
 
 __exports__ = [IndexPageData, DetailPageData]
