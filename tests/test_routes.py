@@ -202,6 +202,8 @@ async def test_api_response_field_sets():
         "error_message",
         "attempt",
         "duration_ms",
+        "trace_id",
+        "span_id",
     }
     assert runs_json[0]["task_name"] == "shaped"
 
@@ -372,3 +374,93 @@ async def test_api_enable_route_exists():
     )
     assert response.status_code in (200, 403)
     await datasette._cron_scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_runs_api_includes_trace_fields():
+    datasette = Datasette(
+        memory=True,
+        config={"permissions": {"datasette-cron-access": True}},
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": handler})
+    await scheduler.add_task(
+        name="traced", handler="test:h", schedule={"interval": 3600}
+    )
+    await scheduler.trigger_task("traced")
+    for tasks in list(scheduler._running_tasks.values()):
+        for t in list(tasks):
+            await t
+
+    response = await datasette.client.get("/-/api/cron/tasks/traced/runs")
+    assert response.status_code == 200
+    run = response.json()["runs"][0]
+    assert "trace_id" in run
+    assert "span_id" in run
+    await scheduler.shutdown()
+
+
+def _page_data_from(html: str) -> dict:
+    match = re.search(
+        r'<script type="application/json" id="pageData">(.*?)</script>', html, re.S
+    )
+    assert match
+    return json.loads(match.group(1))
+
+
+@pytest.mark.asyncio
+async def test_detail_page_data_carries_trace_url():
+    datasette = Datasette(
+        memory=True,
+        config={
+            "permissions": {"datasette-cron-access": True},
+            "plugins": {
+                "datasette-cron": {
+                    "trace_url": "http://localhost:16686/trace/{trace_id}"
+                }
+            },
+        },
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": handler})
+    await scheduler.add_task(name="t", handler="test:h", schedule={"interval": 3600})
+
+    response = await datasette.client.get("/-/cron/t")
+    assert response.status_code == 200
+    page_data = _page_data_from(response.text)
+    assert page_data["trace_url"] == "http://localhost:16686/trace/{trace_id}"
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_trace_url_without_placeholder_is_ignored():
+    datasette = Datasette(
+        memory=True,
+        config={
+            "permissions": {"datasette-cron-access": True},
+            "plugins": {"datasette-cron": {"trace_url": "http://example.com/traces"}},
+        },
+    )
+    await datasette.invoke_startup()
+    scheduler = datasette._cron_scheduler
+
+    async def handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"h": handler})
+    await scheduler.add_task(name="t", handler="test:h", schedule={"interval": 3600})
+
+    response = await datasette.client.get("/-/cron/t")
+    assert response.status_code == 200
+    assert _page_data_from(response.text)["trace_url"] is None
+    await scheduler.shutdown()

@@ -821,3 +821,60 @@ async def test_gauges_via_metric_reader(fresh_live_schedulers, otel_metrics):
     assert tasks_point.value >= 1
 
     await ds.invoke_shutdown()
+
+
+# --- trace ids on the runs table ------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_run_row_records_trace_and_span_ids(otel_spans):
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+    otel_spans.clear()
+
+    await scheduler.trigger_task("t")
+    await _drain(scheduler)
+
+    attempt = _one_span(otel_spans, "datasette_cron.attempt")
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT trace_id, span_id FROM datasette_cron_runs"
+        )
+    ).first()
+    assert row["trace_id"] == format(attempt.context.trace_id, "032x")
+    assert row["span_id"] == format(attempt.context.span_id, "016x")
+    assert len(row["trace_id"]) == 32
+    assert len(row["span_id"]) == 16
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_record_run_start_without_span_context_stores_null():
+    ds, scheduler = await _make_scheduler()
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="t", handler="test:noop", schedule={"interval": 99999}
+    )
+
+    await scheduler.internal_db.record_run_start("t", 1)
+    row = (
+        await ds.get_internal_database().execute(
+            "SELECT trace_id, span_id FROM datasette_cron_runs"
+        )
+    ).first()
+    assert row["trace_id"] is None
+    assert row["span_id"] is None
+
+    await scheduler.shutdown()

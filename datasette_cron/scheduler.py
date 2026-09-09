@@ -488,8 +488,22 @@ class Scheduler:
                         attempts_made = attempt
                         with tracer.start_as_current_span(ATTEMPT_SPAN) as attempt_span:
                             attempt_span.set_attribute(ATTEMPT, attempt)
+                            # With no tracing provider the context is not
+                            # valid and both ids stay NULL on the row.
+                            ctx = attempt_span.get_span_context()
                             run_id = await self.internal_db.record_run_start(
-                                name, attempt
+                                name,
+                                attempt,
+                                trace_id=(
+                                    format(ctx.trace_id, "032x")
+                                    if ctx.is_valid
+                                    else None
+                                ),
+                                span_id=(
+                                    format(ctx.span_id, "016x")
+                                    if ctx.is_valid
+                                    else None
+                                ),
                             )
                             attempt_span.set_attribute(RUN_ID, run_id)
                             start_time = time.monotonic()

@@ -23,11 +23,15 @@ export type Status = string;
 export type ErrorMessage = string | null;
 export type Attempt = number;
 export type DurationMs = number | null;
+export type TraceId = string | null;
+export type SpanId = string | null;
 export type Runs = RunSummary[];
+export type TraceUrl = string | null;
 
 export interface DetailPageData {
   task: TaskSummary;
   runs: Runs;
+  trace_url: TraceUrl;
   [k: string]: unknown;
 }
 export interface TaskSummary {
@@ -52,5 +56,7 @@ export interface RunSummary {
   error_message: ErrorMessage;
   attempt: Attempt;
   duration_ms: DurationMs;
+  trace_id: TraceId;
+  span_id: SpanId;
   [k: string]: unknown;
 }

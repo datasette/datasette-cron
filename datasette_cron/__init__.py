@@ -75,6 +75,19 @@ def startup(datasette):
         datasette._cron_scheduler = scheduler
         telemetry.register_scheduler(scheduler)
 
+        # Optional trace_url plugin config: a template that turns a run's
+        # stored trace id into a tracing-UI link on the detail page, e.g.
+        # "http://localhost:16686/trace/{trace_id}". Validated once here.
+        config = datasette.plugin_config("datasette-cron") or {}
+        trace_url = config.get("trace_url")
+        if trace_url and "{trace_id}" not in trace_url:
+            logger.warning(
+                "datasette-cron trace_url %r has no {trace_id} placeholder, ignoring",
+                trace_url,
+            )
+            trace_url = None
+        datasette._cron_trace_url = trace_url
+
         # Reconcile runs orphaned by a crashed previous process. Safe here
         # because core only launches supervised background tasks (including
         # our scheduler loop, registered below) after every plugin's startup
