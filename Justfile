@@ -97,6 +97,30 @@ dev *flags:
     --plugins-dir samples \
     {{flags}}
 
+# Like `just dev`, with OpenTelemetry spans and metrics printed to the
+# console (via opentelemetry-instrument from the dev dependency group).
+dev-otel *flags:
+  mkdir -p .tmp
+  DATASETTE_SECRET=abc123 \
+  OTEL_TRACES_EXPORTER=console OTEL_METRICS_EXPORTER=console \
+  OTEL_LOGS_EXPORTER=none OTEL_METRIC_EXPORT_INTERVAL=10000 \
+    uv run opentelemetry-instrument datasette \
+    -s permissions.datasette-cron-access true \
+    -s permissions.permissions-debug true \
+    --internal .tmp/internal.db \
+    -p 8010 \
+    .tmp/tmp.db \
+    --plugins-dir samples \
+    {{flags}}
+
+# Regenerate the OpenTelemetry reference in README.md from the registry.
+telemetry-doc:
+  uv run scripts/telemetry-doc.py
+
+# CI: fail if README's telemetry reference is stale.
+telemetry-doc-check:
+  uv run scripts/telemetry-doc.py --check
+
 clean-dev:
   rm -rf .tmp/
 
