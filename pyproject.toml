@@ -10,8 +10,9 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a40",
+    "datasette>=1.0a39",
     "datasette-plugin-router>=0.0.1a2",
+    "opentelemetry-api>=1.37",
     "datasette-vite>=0.0.1a4",
     "pydantic>=2",
     "python-ulid>=3",
@@ -28,6 +29,7 @@ dev = [
     # but declare it here rather than lean on a transitive dep -- that is
     # exactly what broke when core moved off httpx.
     "httpx2>=2.0",
+    "opentelemetry-sdk>=1.37",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.15.0",
@@ -63,3 +65,17 @@ include = ["datasette_cron*"]
 
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]
+
+# TODO: drop this override (and raise the floor above) once a datasette
+# release ships the plugin telemetry kit (datasette.telemetry,
+# datasette.telemetry_registry, datasette.telemetry_testing).
+#
+# The first-request lifecycle work (add_background_task, the shutdown hook)
+# shipped in 1.0a40, which is why first-request-port needs no override. The
+# telemetry kit is still unreleased, so this branch resolves from
+# simonw/datasette's otel plugin-kit branch, pinned to an exact rev -- that
+# branch is main + the otel stack and already carries the lifecycle work.
+# The floor stays at 1.0a39 because that is the version the pinned rev
+# reports; a 1.0a40 floor would make the override unresolvable.
+[tool.uv.sources]
+datasette = { git = "https://github.com/simonw/datasette", rev = "4579a19520b502e90662a79ebd84555a87542340" }
