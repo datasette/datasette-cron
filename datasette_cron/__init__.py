@@ -6,10 +6,14 @@ from sqlite_utils import Database as SqliteUtilsDatabase
 
 import logging
 
+from opentelemetry.trace import Status, StatusCode
+
 from .hookspecs import cron_register_handlers as cron_register_handlers
 from .internal_migrations import internal_migrations
 from .router import router, ACCESS_ACTION
 from .scheduler import Scheduler
+from .telemetry import tracer
+from .telemetry_registry import ERROR_TYPE, HANDLERS, PLUGIN, REGISTER_HANDLERS
 
 logger = logging.getLogger("datasette_cron")
 
@@ -86,15 +90,25 @@ def startup(datasette):
                 plugin, "__module__", ""
             )
             plugin_name = module.replace("datasette_", "").split(".")[0] or "unknown"
-            try:
-                result = plugin.cron_register_handlers(datasette=datasette)
-                if result and isinstance(result, dict):
-                    scheduler.register_handlers(plugin_name, result)
-            except Exception:
-                logger.exception(
-                    "Plugin %r raised while registering cron handlers",
-                    plugin_name,
-                )
+            # Child of whatever is current (core's datasette.startup span),
+            # not a root: a red span in the startup trace is the signal the
+            # swallowed-and-logged exception below is not.
+            with tracer.start_as_current_span(REGISTER_HANDLERS) as span:
+                span.set_attribute(PLUGIN, plugin_name)
+                try:
+                    result = plugin.cron_register_handlers(datasette=datasette)
+                    handlers = result if result and isinstance(result, dict) else {}
+                    span.set_attribute(HANDLERS, len(handlers))
+                    if handlers:
+                        scheduler.register_handlers(plugin_name, handlers)
+                except Exception as e:
+                    span.set_attribute(ERROR_TYPE, type(e).__name__)
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    logger.exception(
+                        "Plugin %r raised while registering cron handlers",
+                        plugin_name,
+                    )
 
         # Register the loop as a supervised background task. Core launches
         # it only after every plugin's startup hook (this one included) has
