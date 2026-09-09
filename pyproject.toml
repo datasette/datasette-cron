@@ -28,6 +28,7 @@ dev = [
     # but declare it here rather than lean on a transitive dep -- that is
     # exactly what broke when core moved off httpx.
     "httpx2>=2.0",
+    "opentelemetry-distro>=0.58b0",
     "opentelemetry-sdk>=1.37",
     "pytest",
     "pytest-asyncio",

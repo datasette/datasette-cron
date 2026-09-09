@@ -15,6 +15,7 @@ Scheduled tasks and background jobs for Datasette. Provides a central scheduler 
 |---------|-------------|
 | `just dev` | Run Datasette dev server on port 8010 |
 | `just dev-with-hmr` | Datasette + Vite HMR (restarts on .py/.html changes) |
+| `just dev-otel` | Dev server with OpenTelemetry spans + metrics printed to the console |
 | `just frontend-dev` | Start Vite dev server on port 5180 |
 | `just frontend` | Build frontend for production |
 | `just types` | Regenerate all TypeScript types from Python |
@@ -22,6 +23,8 @@ Scheduled tasks and background jobs for Datasette. Provides a central scheduler 
 | `just format` | Format backend (ruff) + frontend (prettier) |
 | `just check` | Type-check backend (ty) + frontend (svelte-check) |
 | `just test` | Run Python tests |
+| `just telemetry-doc` | Regenerate README's OpenTelemetry reference from the registry |
+| `just telemetry-doc-check` | CI hook: fail if the telemetry reference is stale |
 | `just shots [names...]` | Regenerate committed doc screenshots in `docs/screenshots/` (throwaway datasette on :8492; one-time setup `npx playwright install chromium` in `frontend/`) |
 
 ## Project Structure
@@ -36,6 +39,8 @@ datasette_cron/
 ├── internal_migrations.py   # sqlite-migrate schema
 ├── schedules.py             # CronSchedule, IntervalSchedule, RRuleSchedule
 ├── scheduler.py             # Scheduler class: loop, execution, retry, CRUD API
+├── telemetry.py             # OTel tracer/meter, instruments, gauge callbacks
+├── telemetry_registry.py    # Every span/metric name (docs + conformance test read it)
 ├── routes/
 │   ├── pages.py             # Page routes (render HTML)
 │   └── api.py               # API routes (return JSON)
