@@ -87,6 +87,12 @@ class Scheduler:
         # regardless of overlap_policy, so multiple runs of the same task can
         # coexist; tracking them all here lets shutdown cancel every one.
         self._running_tasks: dict[str, set[asyncio.Task]] = {}
+        # In-memory state the observable gauge callbacks read from the
+        # SDK's collection thread (see telemetry.py): when the loop last
+        # completed a tick, and the task list _compute_sleep already
+        # fetched.
+        self._last_tick_finished: float | None = None
+        self._task_snapshot: list[CronTask] = []
 
     @property
     def internal_db(self) -> InternalDB:
@@ -119,6 +125,7 @@ class Scheduler:
         """
         self._shutting_down = True
         self._wake_event.set()
+        telemetry.unregister_scheduler(self)
 
         # Cancel every in-flight execution across all tasks.
         in_flight = [t for tasks in self._running_tasks.values() for t in tasks]
@@ -334,6 +341,10 @@ class Scheduler:
                     # Sleep until next due task or max 60s
                     sleep_seconds = await self._compute_sleep()
                     tick_span.set_attribute(SLEEP, sleep_seconds)
+
+            # An errored tick still counts as the loop being alive; the
+            # tick.age gauge measures loop liveness, not tick success.
+            self._last_tick_finished = time.monotonic()
 
             if sleep_seconds is None:
                 await asyncio.sleep(5)
@@ -571,6 +582,9 @@ class Scheduler:
 
     async def _compute_sleep(self) -> float:
         tasks = await self.internal_db.get_all_tasks()
+        # Cache for the tasks gauge callback: it runs on the SDK's
+        # collection thread and must never touch SQLite itself.
+        self._task_snapshot = tasks
         now = _utcnow()
         min_wait = 60.0
         for task in tasks:

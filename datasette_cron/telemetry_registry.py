@@ -22,6 +22,7 @@ Three things read this module, which is the point of it existing:
 
 from datasette.telemetry_registry import (
     COUNTER,
+    GAUGE,
     HISTOGRAM,
     Attribute,
     MetricName,
@@ -152,6 +153,15 @@ OVERLAP_POLICY = Attribute(
     "What the task's overlap policy did about the run already in flight: "
     "`skip` dropped the new run, `cancel` cancelled the old one.",
     values={"skip", "cancel"},
+)
+ENABLED = Attribute(
+    "datasette_cron.enabled",
+    "Whether the counted tasks are enabled.",
+)
+LAST_STATUS = Attribute(
+    "datasette_cron.last_status",
+    "The counted tasks' `last_status` column, or `none` for a task that has never run.",
+    values={"success", "error", "none"},
 )
 
 
@@ -300,4 +310,43 @@ M_OVERLAPS = MetricName(
     (TASK, OVERLAP_POLICY),
 )
 
-METRICS: tuple[MetricName, ...] = (M_RUN_DURATION, M_RUN_LAG, M_ATTEMPTS, M_OVERLAPS)
+M_RUNS_ACTIVE = MetricName(
+    "datasette_cron.runs.active",
+    GAUGE,
+    "{run}",
+    "Executions in flight right now, by task. Tasks with nothing in "
+    "flight report no series.",
+    (TASK,),
+)
+
+M_TICK_AGE = MetricName(
+    "datasette_cron.tick.age",
+    GAUGE,
+    "s",
+    "Seconds since the scheduler loop last finished a tick. **This is the "
+    "liveness signal** nothing else in the system exposes: the loop ticks "
+    "at least once a minute, so a value sustained above ~65 s means it is "
+    "stalled or dead - a sync handler blocking the event loop, or the "
+    "supervised task crashed. Not reported before the first tick "
+    "completes.",
+)
+
+M_TASKS = MetricName(
+    "datasette_cron.tasks",
+    GAUGE,
+    "{task}",
+    "Registered tasks, counted by enabled state and last run status. Read "
+    "from the snapshot the loop already has in hand from computing its "
+    "sleep - no extra queries, and no reporting before the first tick.",
+    (ENABLED, LAST_STATUS),
+)
+
+METRICS: tuple[MetricName, ...] = (
+    M_RUN_DURATION,
+    M_RUN_LAG,
+    M_ATTEMPTS,
+    M_OVERLAPS,
+    M_RUNS_ACTIVE,
+    M_TICK_AGE,
+    M_TASKS,
+)

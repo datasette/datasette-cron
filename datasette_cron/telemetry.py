@@ -21,6 +21,10 @@ not contained by it) use `datasette.telemetry.linked_root_span_kwargs()`;
 there is deliberately no local helper.
 """
 
+import threading
+import time
+import weakref
+from collections import Counter
 from importlib.metadata import version
 
 from opentelemetry import metrics as otel_metrics
@@ -33,7 +37,18 @@ from opentelemetry import trace as otel_trace
 # 1.30). Importing the URL keeps the two libraries making the same claim.
 from datasette.telemetry import SCHEMA_URL
 
-from .telemetry_registry import M_ATTEMPTS, M_OVERLAPS, M_RUN_DURATION, M_RUN_LAG
+from .telemetry_registry import (
+    ENABLED,
+    LAST_STATUS,
+    M_ATTEMPTS,
+    M_OVERLAPS,
+    M_RUN_DURATION,
+    M_RUN_LAG,
+    M_RUNS_ACTIVE,
+    M_TASKS,
+    M_TICK_AGE,
+    TASK,
+)
 
 __version__ = version("datasette-cron")
 
@@ -69,4 +84,83 @@ overlaps = meter.create_counter(
     M_OVERLAPS,
     unit=M_OVERLAPS.unit,
     description="Due runs that found an earlier run of the same task in flight",
+)
+
+
+# --- Observable gauges ----------------------------------------------------
+#
+# Mirrors core's _live_datasettes plumbing (a pattern, not an import: its
+# WeakSet holds Datasette instances, ours holds schedulers). The callbacks
+# run on the SDK's metric collection thread: they read in-memory state
+# only - no awaits, no SQLite, no lock shared with the event loop.
+# Iterating list(...) copies of dicts mutated on the event loop is the
+# accepted race, same as core's len() on _pending_execute_futures.
+
+_live_schedulers = weakref.WeakSet()
+_live_schedulers_lock = threading.Lock()
+
+
+def register_scheduler(scheduler):
+    "Track a scheduler so the observable gauges report on it."
+    with _live_schedulers_lock:
+        _live_schedulers.add(scheduler)
+
+
+def unregister_scheduler(scheduler):
+    "Stop reporting on a scheduler; called from its shutdown."
+    with _live_schedulers_lock:
+        _live_schedulers.discard(scheduler)
+
+
+def _live():
+    with _live_schedulers_lock:
+        return list(_live_schedulers)
+
+
+def observe_runs_active(options=None):
+    for scheduler in _live():
+        for name, tasks in list(scheduler._running_tasks.items()):
+            active = sum(1 for t in list(tasks) if not t.done())
+            if active:
+                yield otel_metrics.Observation(active, {TASK: name})
+
+
+def observe_tick_age(options=None):
+    now = time.monotonic()
+    for scheduler in _live():
+        if scheduler._last_tick_finished is not None:
+            yield otel_metrics.Observation(now - scheduler._last_tick_finished, {})
+
+
+def observe_tasks(options=None):
+    for scheduler in _live():
+        counts = Counter(
+            (bool(task.enabled), task.last_status or "none")
+            for task in scheduler._task_snapshot
+        )
+        for (enabled, last_status), n in counts.items():
+            yield otel_metrics.Observation(
+                n, {ENABLED: enabled, LAST_STATUS: last_status}
+            )
+
+
+runs_active_gauge = meter.create_observable_gauge(
+    M_RUNS_ACTIVE,
+    callbacks=[observe_runs_active],
+    unit=M_RUNS_ACTIVE.unit,
+    description="Cron task executions currently in flight",
+)
+
+tick_age_gauge = meter.create_observable_gauge(
+    M_TICK_AGE,
+    callbacks=[observe_tick_age],
+    unit=M_TICK_AGE.unit,
+    description="Seconds since the scheduler loop last finished a tick",
+)
+
+tasks_gauge = meter.create_observable_gauge(
+    M_TASKS,
+    callbacks=[observe_tasks],
+    unit=M_TASKS.unit,
+    description="Registered cron tasks by enabled state and last run status",
 )

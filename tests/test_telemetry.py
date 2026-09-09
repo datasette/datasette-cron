@@ -5,6 +5,9 @@ conftest.py.
 """
 
 import asyncio
+import time
+import weakref
+from types import SimpleNamespace
 
 import pytest
 from datasette import hookimpl
@@ -13,6 +16,7 @@ from datasette.plugins import pm
 from datasette.telemetry import SCHEMA_URL, linked_root_span_kwargs
 from opentelemetry.trace import StatusCode
 
+from datasette_cron import telemetry
 from datasette_cron.scheduler import _lag_seconds, _utcnow
 from datasette_cron.telemetry import tracer
 
@@ -701,3 +705,119 @@ async def test_metrics_overlap_skip_and_cancel(otel_metrics):
     assert cancel.value == 1
 
     await scheduler.shutdown()
+
+
+# --- observable gauges: runs.active, tick.age, tasks ----------------------
+
+
+@pytest.fixture
+def fresh_live_schedulers(monkeypatch):
+    """Isolate the live-scheduler registry so schedulers leaked by other
+    tests (still referenced, never shut down) cannot pollute gauge
+    assertions."""
+    monkeypatch.setattr(telemetry, "_live_schedulers", weakref.WeakSet())
+
+
+@pytest.mark.asyncio
+async def test_observe_runs_active(fresh_live_schedulers):
+    ds, scheduler = await _make_scheduler()
+    telemetry.register_scheduler(scheduler)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def slow(datasette, config):
+        started.set()
+        await release.wait()
+
+    scheduler.register_handlers("test", {"slow": slow})
+    await scheduler.add_task(
+        name="g1", handler="test:slow", schedule={"interval": 99999}
+    )
+
+    assert list(telemetry.observe_runs_active()) == []
+    await scheduler.trigger_task("g1")
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+
+    (obs,) = list(telemetry.observe_runs_active())
+    assert obs.value == 1
+    assert obs.attributes == {"datasette_cron.task": "g1"}
+
+    release.set()
+    await _drain(scheduler)
+    assert list(telemetry.observe_runs_active()) == []
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_observe_tick_age_and_shutdown_unregisters(fresh_live_schedulers):
+    ds, scheduler = await _make_scheduler()
+    telemetry.register_scheduler(scheduler)
+
+    # Not reported before the first tick.
+    assert list(telemetry.observe_tick_age()) == []
+
+    scheduler._last_tick_finished = time.monotonic() - 3
+    (obs,) = list(telemetry.observe_tick_age())
+    assert 3 <= obs.value < 4
+    assert obs.attributes == {}
+
+    await scheduler.shutdown()
+    assert list(telemetry.observe_tick_age()) == []
+
+
+@pytest.mark.asyncio
+async def test_observe_tasks(fresh_live_schedulers):
+    ds, scheduler = await _make_scheduler()
+    telemetry.register_scheduler(scheduler)
+    scheduler._task_snapshot = [
+        SimpleNamespace(enabled=True, last_status="success"),
+        SimpleNamespace(enabled=True, last_status="success"),
+        SimpleNamespace(enabled=True, last_status=None),
+        SimpleNamespace(enabled=False, last_status="error"),
+    ]
+
+    observations = {
+        (
+            obs.attributes["datasette_cron.enabled"],
+            obs.attributes["datasette_cron.last_status"],
+        ): obs.value
+        for obs in telemetry.observe_tasks()
+    }
+    assert observations == {
+        (True, "success"): 2,
+        (True, "none"): 1,
+        (False, "error"): 1,
+    }
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_gauges_via_metric_reader(fresh_live_schedulers, otel_metrics):
+    ds, scheduler = await _make_scheduler()
+    telemetry.register_scheduler(scheduler)
+
+    async def noop(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"noop": noop})
+    await scheduler.add_task(
+        name="g2", handler="test:noop", schedule={"interval": 99999}
+    )
+
+    await ds.start_background_tasks()
+    await asyncio.sleep(0.2)
+
+    # collect() triggers the gauge callbacks.
+    otel_metrics.collect()
+    age = otel_metrics.point("datasette_cron.tick.age")
+    assert 0 <= age.value < 5
+    # The seeded task has never run, so it counts under last_status "none".
+    tasks_point = otel_metrics.point(
+        "datasette_cron.tasks",
+        {"datasette_cron.enabled": True, "datasette_cron.last_status": "none"},
+    )
+    assert tasks_point.value >= 1
+
+    await ds.invoke_shutdown()
