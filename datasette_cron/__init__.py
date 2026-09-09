@@ -12,6 +12,7 @@ from .hookspecs import cron_register_handlers as cron_register_handlers
 from .internal_migrations import internal_migrations
 from .router import router, ACCESS_ACTION
 from .scheduler import Scheduler
+from . import telemetry
 from .telemetry import tracer
 from .telemetry_registry import ERROR_TYPE, HANDLERS, PLUGIN, REGISTER_HANDLERS
 
@@ -73,6 +74,7 @@ def startup(datasette):
         # Build scheduler (but don't start the loop yet -- that happens after all startups)
         scheduler = Scheduler(datasette)
         datasette._cron_scheduler = scheduler
+        telemetry.register_scheduler(scheduler)
 
         # Reconcile runs orphaned by a crashed previous process. Safe here
         # because core only launches supervised background tasks (including
