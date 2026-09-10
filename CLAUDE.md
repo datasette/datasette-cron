@@ -15,7 +15,7 @@ Scheduled tasks and background jobs for Datasette. Provides a central scheduler 
 |---------|-------------|
 | `just dev` | Run Datasette dev server on port 8010 |
 | `just dev-with-hmr` | Datasette + Vite HMR (restarts on .py/.html changes) |
-| `just dev-otel` | Dev server with OpenTelemetry spans + metrics printed to the console |
+| `just dev-otel` | Dev server with `../datasette-otel-viewer` loaded — browse spans + metrics at `/-/otel` |
 | `just frontend-dev` | Start Vite dev server on port 5180 |
 | `just frontend` | Build frontend for production |
 | `just types` | Regenerate all TypeScript types from Python |
