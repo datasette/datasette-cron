@@ -263,6 +263,11 @@ documentation. Locally, `just dev-otel` runs the dev server with the
 `datasette-otel-viewer` sibling checkout loaded, so spans and metrics can
 be browsed in-instance at `/-/otel`.
 
+The sample plugins in `samples/` show the handler-author side: each opens
+its own instrumentation scope (`opentelemetry-api` only, no provider) and
+adds custom spans and counters that nest inside this plugin's
+`datasette_cron.attempt` span automatically via context propagation.
+
 What nests where (`db.query` spans are core's):
 
 ```
