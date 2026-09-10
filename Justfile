@@ -113,16 +113,36 @@ dev *flags:
     --plugins-dir samples \
     {{flags}}
 
-# Like `just dev`, with OpenTelemetry spans and metrics printed to the
-# console (via opentelemetry-instrument from the dev dependency group).
+# Like `just dev`, with the sibling datasette-otel-viewer plugin loaded so
+# this plugin's spans and metrics can be browsed in-instance at /-/otel
+# (traces + metrics). Rows land in .tmp/otel.db.
+#
+# The viewer self-records: it installs its own TracerProvider/MeterProvider
+# at import time, so no `opentelemetry-instrument` and no OTEL_* env vars
+# here — a provider installed before the plugin imports wins the race and
+# disables the viewer's self-recording. It stays on a `--with ../` sibling
+# path because it is not on PyPI yet (same reasoning as datasette-paper's
+# Justfile); once published, move it to the `dev` group and drop the flag.
+#
+# `--no-sources` + the second `--with` pin datasette to the same rev this
+# branch's [tool.uv.sources] points at (whose add_background_task the
+# scheduler needs, and whose telemetry kit this branch is built on).
+# Without them the viewer's own [tool.uv.sources] datasette pin (an older
+# GitHub rev) conflicts with ours and resolution fails. Keep this rev in
+# sync with the one in pyproject.toml.
 dev-otel *flags:
   mkdir -p .tmp
-  DATASETTE_SECRET=abc123 \
-  OTEL_TRACES_EXPORTER=console OTEL_METRICS_EXPORTER=console \
-  OTEL_LOGS_EXPORTER=none OTEL_METRIC_EXPORT_INTERVAL=10000 \
-    uv run opentelemetry-instrument datasette \
+  DATASETTE_SECRET=abc123 uv run \
+    --no-sources \
+    --no-cache \
+    --with ../datasette-otel-viewer \
+    --with 'datasette @ git+https://github.com/simonw/datasette@4579a19520b502e90662a79ebd84555a87542340' \
+    datasette \
     -s permissions.datasette-cron-access true \
     -s permissions.permissions-debug true \
+    -s permissions.datasette-otel-viewer true \
+    -s plugins.datasette-otel-viewer.db_path .tmp/otel.db \
+    -s plugins.datasette-otel-viewer.service_name datasette-cron \
     --internal .tmp/internal.db \
     -p 8010 \
     .tmp/tmp.db \

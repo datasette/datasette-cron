@@ -259,8 +259,9 @@ exporter or sampler is ever installed, so nothing is recorded and nothing
 measurable is spent until you turn tracing on externally — normally with
 the standard `opentelemetry-instrument` agent, as described in core's
 ["Turning tracing on"](https://docs.datasette.io/en/latest/internals.html#internals-telemetry-turning-on)
-documentation. Locally, `just dev-otel` runs the dev server with spans and
-metrics printed to the terminal.
+documentation. Locally, `just dev-otel` runs the dev server with the
+`datasette-otel-viewer` sibling checkout loaded, so spans and metrics can
+be browsed in-instance at `/-/otel`.
 
 What nests where (`db.query` spans are core's):
 
@@ -414,7 +415,7 @@ just check                # lint + type check (backend + frontend)
 just types                # regenerate frontend types from Python sources
 just types-check-fresh    # CI hook: fail if generated types are stale
 just shots                # regenerate the committed doc screenshots
-just dev-otel             # dev server with spans + metrics on the console
+just dev-otel             # dev server with the in-instance /-/otel viewer
 just telemetry-doc        # regenerate README's telemetry reference
 just telemetry-doc-check  # CI hook: fail if the telemetry reference is stale
 ```
