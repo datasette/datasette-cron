@@ -107,7 +107,9 @@ async def api_trigger_task(datasette, request, task_name: str):
     await require_permission(datasette, request)
     scheduler = get_scheduler(datasette)
     try:
-        await scheduler.trigger_task(task_name)
+        await scheduler.trigger_task(
+            task_name, actor_id=(request.actor or {}).get("id")
+        )
         return Response.json({"ok": True, "message": f"Task {task_name} triggered"})
     except ValueError as e:
         return Response.json({"ok": False, "message": str(e)}, status=404)
