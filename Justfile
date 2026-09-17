@@ -6,16 +6,21 @@
 # `just format` runs prettier over the whole frontend. Without this pass the
 # two overwrite each other and `types-check-fresh` and `format-check` can
 # never both be green.
+#
+# The pass runs from inside frontend/, the same cwd as the format/format:check
+# npm scripts. Prettier resolves config from each file's directory upward, but
+# resolves plugins and ignore files relative to cwd -- from the repo root it
+# cannot find anything in frontend/node_modules.
 
 types-routes:
   uv run python -c 'from datasette_cron.router import router; import json; print(json.dumps(router.openapi_document_json()))' \
     | npx --prefix frontend openapi-typescript > frontend/api.d.ts
-  npx --prefix frontend prettier --write --log-level warn frontend/api.d.ts
+  cd frontend && npx prettier --write --log-level warn api.d.ts
 
 types-pagedata:
   uv run scripts/typegen-pagedata.py
   for f in frontend/src/page_data/*_schema.json; do npx --prefix frontend json2ts "$f" > "${f%_schema.json}.types.ts"; done
-  npx --prefix frontend prettier --write --log-level warn frontend/src/page_data/
+  cd frontend && npx prettier --write --log-level warn src/page_data/
 
 types:
   just types-routes
