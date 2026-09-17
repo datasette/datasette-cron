@@ -28,7 +28,7 @@ Scheduled tasks and background jobs for Datasette. Provides a central scheduler 
 
 ```
 datasette_cron/
-├── __init__.py              # Plugin hooks (startup, routes, asgi_wrapper, menu_links)
+├── __init__.py              # Plugin hooks (startup, shutdown, routes, menu_links)
 ├── hookspecs.py             # cron_register_handlers hookspec
 ├── router.py                # Shared Router + permission decorator
 ├── page_data.py             # Pydantic models (page data + API contracts)
@@ -85,8 +85,9 @@ frontend/src/
 - `extra_template_vars()` — provides `datasette_cron_vite_entry()` for templates
 - `register_actions()` — defines `datasette-cron-access` permission
 - `menu_links()` — adds "Cron Tasks" to nav menu
-- `startup()` — applies migrations, builds handler registry, starts scheduler
-- `asgi_wrapper()` — intercepts lifespan shutdown for graceful cleanup
+- `startup()` — applies migrations, builds handler registry, registers the
+  scheduler loop via `datasette.add_background_task(scheduler.run, ...)`
+- `shutdown()` — cancels in-flight executions before core cancels the loop task
 
 ## Hooks Defined
 

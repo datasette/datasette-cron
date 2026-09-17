@@ -10,7 +10,7 @@ Usage:
 
 from datasette import hookimpl
 from datetime import datetime
-import httpx
+import httpx2
 
 
 BSKY_API = "https://public.api.bsky.app/xrpc"
@@ -25,7 +25,7 @@ async def fetch_bluesky_feed(datasette, config):
     limit = config.get("limit", 30)
     max_pages = config.get("max_pages", 1)
 
-    async with httpx.AsyncClient() as client:
+    async with httpx2.AsyncClient() as client:
         cursor = None
         for _ in range(max_pages):
             params = {"feed": feed_uri, "limit": limit}

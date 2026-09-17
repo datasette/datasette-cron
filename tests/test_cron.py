@@ -844,11 +844,21 @@ async def test_plugin_is_installed():
 
 @pytest.mark.asyncio
 async def test_scheduler_starts_on_startup():
+    """The loop is registered from `startup` as a core-supervised
+    background task (`datasette.add_background_task(scheduler.run, ...)`),
+    launched by `datasette.start_background_tasks()` -- and torn down by
+    `invoke_shutdown()`, which runs our `shutdown` hook (cancelling
+    in-flight executions) before core cancels the loop task itself."""
     ds, scheduler = await _make_scheduler()
-    scheduler.start()
-    assert scheduler._loop_task is not None
-    assert not scheduler._loop_task.done()
-    await scheduler.shutdown()
+    await ds.start_background_tasks()
+    handles = {handle.name: handle for handle in ds._background_tasks.tasks()}
+    handle = handles["datasette-cron"]
+    assert handle.state == "running"
+    assert handle.task is not None
+    assert not handle.task.done()
+
+    await ds.invoke_shutdown()
+    assert handle.task.done()
 
 
 # ---------------------------------------------------------------------------
@@ -1221,8 +1231,11 @@ async def test_trigger_force_runs_through_overlap_skip():
     assert scheduler.is_running("force-trigger")
     assert len(scheduler._running_tasks["force-trigger"]) == 2
 
+    # Wait for both runs to finish (including their run-record writes)
+    # rather than sleeping a fixed amount, which flakes on slow CI runners.
     release.set()
-    await asyncio.sleep(0.2)
+    in_flight = list(scheduler._running_tasks["force-trigger"])
+    await asyncio.wait_for(asyncio.gather(*in_flight), timeout=5.0)
     assert not scheduler.is_running("force-trigger")
 
     await scheduler.shutdown()

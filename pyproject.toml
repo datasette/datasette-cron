@@ -10,7 +10,7 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a23",
+    "datasette>=1.0a40",
     "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a4",
     "pydantic>=2",
@@ -23,6 +23,11 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "datasette-debug-gotham>=0.1.0a3",
+    # The samples/ plugins use httpx2 directly. Datasette depends on it too,
+    # but declare it here rather than lean on a transitive dep -- that is
+    # exactly what broke when core moved off httpx.
+    "httpx2>=2.0",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.15.0",
@@ -58,4 +63,3 @@ include = ["datasette_cron*"]
 
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]
-

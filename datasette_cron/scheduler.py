@@ -26,7 +26,6 @@ class Scheduler:
         self.datasette = datasette
         self._handler_registry: dict[str, Callable[..., Any]] = {}
         self._internal_db: InternalDB | None = None
-        self._loop_task: asyncio.Task | None = None
         self._wake_event = asyncio.Event()
         self._shutting_down = False
         # Per-task set of in-flight executions. A manual trigger force-runs
@@ -53,12 +52,16 @@ class Scheduler:
         """Return all registered handler refs (plugin:name), sorted."""
         return sorted(self._handler_registry.keys())
 
-    def start(self) -> None:
-        if self._loop_task is None or self._loop_task.done():
-            loop = asyncio.get_running_loop()
-            self._loop_task = loop.create_task(self._loop())
-
     async def shutdown(self) -> None:
+        """Cancel in-flight executions and record final bookkeeping.
+
+        Called from the plugin's `shutdown` hook, which core runs before it
+        cancels the supervised `run()` loop task itself (registered via
+        `datasette.add_background_task(scheduler.run, ...)` in `startup`) --
+        so this no longer touches the loop task. It only needs to deal with
+        work this scheduler manages on its own: per-execution child tasks
+        spawned by `_spawn_execution`.
+        """
         self._shutting_down = True
         self._wake_event.set()
 
@@ -69,14 +72,6 @@ class Scheduler:
         for t in in_flight:
             try:
                 await t
-            except (asyncio.CancelledError, Exception):
-                pass
-
-        # Cancel the loop
-        if self._loop_task and not self._loop_task.done():
-            self._loop_task.cancel()
-            try:
-                await self._loop_task
             except (asyncio.CancelledError, Exception):
                 pass
 
@@ -219,7 +214,15 @@ class Scheduler:
 
     # ---- Scheduler Loop ----
 
-    async def _loop(self) -> None:
+    async def run(self, datasette) -> None:
+        """Entry point for `datasette.add_background_task(scheduler.run, ...)`.
+
+        Thin adaptation of the scheduler's main loop to the supervised
+        background-task signature core calls as `func(datasette)`.
+        `datasette` here is always `self.datasette` -- the loop already
+        closes over that -- so it's accepted for signature compatibility
+        and otherwise unused.
+        """
         logger.info(
             "Scheduler loop started, handlers: %s", list(self._handler_registry.keys())
         )

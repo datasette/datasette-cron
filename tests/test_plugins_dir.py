@@ -14,6 +14,27 @@ SAMPLE_PLUGIN_PATH = os.path.join(
 )
 
 
+async def _poll(check, timeout=10.0, interval=0.2):
+    """Retry `check()` until it returns truthy or `timeout` elapses.
+
+    The sample task fires every second and commits to a non-WAL database, so
+    a fixed sleep can race a slow CI runner and a read can hit "database is
+    locked" mid-commit. Exceptions count as "not yet" until the deadline.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        try:
+            result = await check()
+        except Exception as e:
+            print(f"  poll: {e}")
+            result = None
+        if result:
+            return result
+        if asyncio.get_running_loop().time() >= deadline:
+            return result
+        await asyncio.sleep(interval)
+
+
 @pytest_asyncio.fixture
 async def ds_plugins_dir():
     """Start Datasette with --plugins-dir pointing at samples/."""
@@ -34,13 +55,12 @@ async def ds_plugins_dir():
             plugins_dir=samples_dir,
             config={"permissions": {"datasette-cron-access": True}},
         )
-        await datasette.invoke_startup()
-        if hasattr(datasette, "_cron_scheduler"):
-            datasette._cron_scheduler.start()
+        await datasette.start_background_tasks()
         yield datasette
-        scheduler = getattr(datasette, "_cron_scheduler", None)
-        if scheduler:
-            await scheduler.shutdown()
+        # Full app teardown: scheduler.shutdown() alone no longer stops the
+        # loop task -- it's core-supervised now, cancelled by
+        # invoke_shutdown() (which runs our `shutdown` hook first).
+        await datasette.invoke_shutdown()
 
 
 @pytest.mark.asyncio
@@ -73,11 +93,14 @@ async def test_task_created_from_plugins_dir(ds_plugins_dir):
 
 @pytest.mark.asyncio
 async def test_task_executes_from_plugins_dir(ds_plugins_dir):
-    """The debug task should execute and produce runs within 3 seconds."""
-    await asyncio.sleep(3)
+    """The debug task should execute and produce runs."""
     scheduler = ds_plugins_dir._cron_scheduler
-    runs = await scheduler.internal_db.get_runs("debug-insert-every-second")
-    print(f"Runs after 3s: {len(runs)}")
+
+    async def check():
+        return await scheduler.internal_db.get_runs("debug-insert-every-second")
+
+    runs = await _poll(check) or []
+    print(f"Runs: {len(runs)}")
     for r in runs:
         print(f"  status={r.status} error={r.error_message}")
     assert len(runs) >= 1, "Expected runs, got none"
@@ -86,19 +109,22 @@ async def test_task_executes_from_plugins_dir(ds_plugins_dir):
 @pytest.mark.asyncio
 async def test_cron_debug_table_populated(ds_plugins_dir):
     """The cron_debug table should have rows after the handler executes."""
-    await asyncio.sleep(3)
 
-    # Find the database that has cron_debug
-    for db_name, db in ds_plugins_dir.databases.items():
-        if db_name == "_internal":
-            continue
-        try:
-            result = await db.execute("SELECT count(*) FROM cron_debug")
+    async def check():
+        # Find the database that has cron_debug
+        for db_name, db in ds_plugins_dir.databases.items():
+            if db_name == "_internal":
+                continue
+            try:
+                result = await db.execute("SELECT count(*) FROM cron_debug")
+            except Exception as e:
+                print(f"  {db_name}: {e}")
+                continue
             count = result.single_value()
             print(f"cron_debug rows in {db_name}: {count}")
             if count > 0:
-                return  # Success
-        except Exception as e:
-            print(f"  {db_name}: {e}")
+                return True
+        return False
 
-    pytest.fail("cron_debug table has no rows in any database")
+    if not await _poll(check):
+        pytest.fail("cron_debug table has no rows in any database")

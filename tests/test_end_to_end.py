@@ -31,10 +31,15 @@ async def ds_with_task():
         overlap="skip",
     )
 
-    scheduler.start()
+    await datasette.start_background_tasks()
     datasette._test_calls = calls
     yield datasette
-    await scheduler.shutdown()
+    # Full app teardown, not just scheduler.shutdown(): the loop is now a
+    # core-supervised background task, and only datasette.invoke_shutdown()
+    # (which runs the plugin's `shutdown` hook, then cancels supervised
+    # tasks) actually stops it. Calling scheduler.shutdown() alone leaves
+    # the loop task running past the end of the test.
+    await datasette.invoke_shutdown()
 
 
 @pytest.mark.asyncio
