@@ -1,12 +1,21 @@
 # === Type Generation ===
 
+# Every recipe here ends by running prettier over what it just wrote.
+# The generators emit their own house style (openapi-typescript indents with
+# four spaces, json.dumps wraps arrays and omits the trailing newline) while
+# `just format` runs prettier over the whole frontend. Without this pass the
+# two overwrite each other and `types-check-fresh` and `format-check` can
+# never both be green.
+
 types-routes:
   uv run python -c 'from datasette_cron.router import router; import json; print(json.dumps(router.openapi_document_json()))' \
     | npx --prefix frontend openapi-typescript > frontend/api.d.ts
+  npx --prefix frontend prettier --write --log-level warn frontend/api.d.ts
 
 types-pagedata:
   uv run scripts/typegen-pagedata.py
   for f in frontend/src/page_data/*_schema.json; do npx --prefix frontend json2ts "$f" > "${f%_schema.json}.types.ts"; done
+  npx --prefix frontend prettier --write --log-level warn frontend/src/page_data/
 
 types:
   just types-routes

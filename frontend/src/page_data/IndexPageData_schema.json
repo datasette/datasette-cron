@@ -110,10 +110,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "tasks",
-    "handlers"
-  ],
+  "required": ["tasks", "handlers"],
   "title": "IndexPageData",
   "type": "object"
 }

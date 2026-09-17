@@ -57,7 +57,7 @@ def _terminate(proc):
 # request arrives.
 # ---------------------------------------------------------------------------
 
-ZERO_HTTP_MARKER_PLUGIN_TEMPLATE = '''
+ZERO_HTTP_MARKER_PLUGIN_TEMPLATE = """
 import sqlite3
 from datasette import hookimpl
 
@@ -98,7 +98,7 @@ def startup(datasette):
         )
 
     return inner
-'''
+"""
 
 
 def _tick_count(marker_db_path):
@@ -168,7 +168,7 @@ def test_task_fires_with_zero_http_requests(tmp_path):
 # must not be left stuck at status='running' forever.
 # ---------------------------------------------------------------------------
 
-SIGTERM_FINALIZE_PLUGIN = '''
+SIGTERM_FINALIZE_PLUGIN = """
 import asyncio
 from datasette import hookimpl
 
@@ -194,7 +194,7 @@ def startup(datasette):
         )
 
     return inner
-'''
+"""
 
 
 def _latest_run_status(internal_db_path):
@@ -248,8 +248,7 @@ def test_sigterm_finalizes_in_flight_run(tmp_path):
         # Wait until the slow execution has genuinely started (status
         # 'running'), so SIGTERM is guaranteed to land mid-flight.
         _poll_until(
-            lambda: (_latest_run_status(internal_db_path) or (None,))[0]
-            == "running",
+            lambda: (_latest_run_status(internal_db_path) or (None,))[0] == "running",
             timeout=15.0,
             proc=ds_proc,
             on_timeout_msg="slow-task never reached status='running'",
