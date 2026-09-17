@@ -63,3 +63,16 @@ include = ["datasette_cron*"]
 
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]
+
+# Keep the formatter out of Markdown. ruff 0.16 began formatting Python code
+# blocks inside .md, which rewrites README's samples: aligned trailing comments
+# get flattened to a single space, so `"0 8 * * *"  # every morning at 8` loses
+# the column that makes a block of them readable. The samples are documentation
+# -- some are deliberately partial -- and a formatter should not own them.
+#
+# uv.lock is git-ignored and pyproject only floors ruff, so a fresh resolve (CI,
+# or any new checkout) picks up 0.16.x while older cached environments stay on
+# 0.15.x and never look at .md at all. Without this, `just format-check` passes
+# locally and fails in CI.
+[tool.ruff.format]
+exclude = ["*.md"]
