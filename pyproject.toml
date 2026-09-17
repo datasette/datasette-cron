@@ -10,7 +10,7 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a39",
+    "datasette>=1.0a40",
     "datasette-plugin-router>=0.0.1a2",
     "datasette-vite>=0.0.1a4",
     "pydantic>=2",
@@ -63,13 +63,3 @@ include = ["datasette_cron*"]
 
 [tool.ty.src]
 exclude = ["tests/", "samples/", "frontend/"]
-
-# TODO: drop this override (and raise the floor above) once a datasette
-# release ships the first-request lifecycle work -- add_background_task(),
-# the shutdown() hook, invoke_shutdown(). That work is merged to
-# simonw/datasette main but not yet released: the published 1.0a39 tag
-# predates it, so the >=1.0a39 floor above cannot express the real
-# requirement on its own. Pinned to an exact main rev, not a branch, so
-# resolution is reproducible and CI does not drift with new main commits.
-[tool.uv.sources]
-datasette = { git = "https://github.com/simonw/datasette", rev = "faff4c8820b231bfd771592cbe588e09834f5577" }
