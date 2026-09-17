@@ -51,7 +51,7 @@ async def test_add_task_creates_task_in_db():
     assert task.name == "my-task"
     assert task.handler == "test:noop"
     assert task.schedule_type == "interval"
-    assert json.loads(task.config) == {"key": "value"}
+    assert task.config == {"key": "value"}
     assert task.enabled is True
     assert task.next_run_at is not None
     assert task.overlap_policy == "skip"
@@ -670,7 +670,7 @@ async def test_internal_db_update_task_config_serialized():
 
     await idb.update_task("cfg-task", config={"x": 42})
     task = await idb.get_task("cfg-task")
-    assert json.loads(task.config) == {"x": 42}
+    assert task.config == {"x": 42}
 
     await scheduler.shutdown()
 
@@ -958,7 +958,7 @@ async def test_scheduler_update_task():
 
     await scheduler.update_task("upd-task", config={"new": True}, overlap="cancel")
     task = await scheduler.internal_db.get_task("upd-task")
-    assert json.loads(task.config) == {"new": True}
+    assert task.config == {"new": True}
     assert task.overlap_policy == "cancel"
 
     await scheduler.shutdown()

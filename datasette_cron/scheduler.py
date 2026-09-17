@@ -443,9 +443,7 @@ class Scheduler:
         now: datetime | None = None,
     ) -> None:
         name = task.name
-        config = (
-            json.loads(task.config) if isinstance(task.config, str) else task.config
-        )
+        config = task.config
         max_attempts = task.retry_max + 1
         backoff_strategy = task.retry_backoff
         plugin, _, _ = task.handler.partition(":")
