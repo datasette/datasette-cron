@@ -34,8 +34,7 @@
   let refreshing = false;
   let nextPollAt = 0;
   // After "Run now": poll until last_run_at advances (run completed), capped.
-  let pendingTrigger: { until: number; lastRunAt: string | null } | null =
-    null;
+  let pendingTrigger: { until: number; lastRunAt: string | null } | null = null;
   // Bumped on every user action; refresh responses that started before the
   // latest mutation are discarded so a stale snapshot can't revert a toggle.
   let mutationCount = 0;
@@ -48,7 +47,9 @@
 
   // Tick every 5 seconds (drives countdown rendering only)
   $effect(() => {
-    const id = setInterval(() => { now = Date.now(); }, 5000);
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 5000);
     return () => clearInterval(id);
   });
 
@@ -107,7 +108,10 @@
           task.last_run_at === updated.last_run_at &&
           task.last_status === updated.last_status;
         nextPollAt = Date.now() + (unchanged ? 2000 : 1000);
-        if (pendingTrigger && updated.last_run_at !== pendingTrigger.lastRunAt) {
+        if (
+          pendingTrigger &&
+          updated.last_run_at !== pendingTrigger.lastRunAt
+        ) {
           pendingTrigger = null;
         }
         task = updated;
@@ -199,7 +203,9 @@
       {/if}
     </div>
     <div class="detail-actions">
-      <button class="btn" disabled={busyTrigger} onclick={triggerTask}>Run now</button>
+      <button class="btn" disabled={busyTrigger} onclick={triggerTask}
+        >Run now</button
+      >
       <button
         class="btn btn-toggle"
         class:btn-on={task.enabled}
@@ -240,7 +246,9 @@
         <div class="card-value time-continuous">continuous</div>
       {:else}
         {@const next = countdown(task.next_run_at, now)}
-        <div class="card-value {next.className}" title={task.next_run_at ?? ""}>{next.text}</div>
+        <div class="card-value {next.className}" title={task.next_run_at ?? ""}>
+          {next.text}
+        </div>
       {/if}
     </div>
     <div class="detail-card">
@@ -306,7 +314,9 @@
     color: #666;
     text-decoration: none;
   }
-  .back-link:hover { color: #1a73e8; }
+  .back-link:hover {
+    color: #1a73e8;
+  }
 
   .detail-header {
     display: flex;
@@ -319,7 +329,9 @@
     align-items: center;
     gap: 0.75rem;
   }
-  .detail-title-row h1 { margin: 0; }
+  .detail-title-row h1 {
+    margin: 0;
+  }
   .detail-actions {
     display: flex;
     gap: 0.5rem;
@@ -379,8 +391,14 @@
   .run-row:hover {
     background: #f8f8f8;
   }
-  .run-error td { color: #c62828; }
-  .mono { font-variant-numeric: tabular-nums; font-family: monospace; font-size: 0.82rem; }
+  .run-error td {
+    color: #c62828;
+  }
+  .mono {
+    font-variant-numeric: tabular-nums;
+    font-family: monospace;
+    font-size: 0.82rem;
+  }
   .error-cell {
     font-size: 0.82rem;
     color: #c62828;
