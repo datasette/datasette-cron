@@ -11,7 +11,6 @@ from datasette_cron.schedules import (
     CronSchedule,
     IntervalSchedule,
     RRuleSchedule,
-    add_jitter,
     parse_schedule,
     schedule_from_db,
 )
@@ -247,22 +246,6 @@ class TestNaiveUtcContract:
             next_run = sched.next_run(now)
             assert next_run.tzinfo is None
             assert next_run == datetime(2026, 7, 2, 8, 0)
-
-
-class TestJitter:
-    def test_jitter_adds_time(self):
-        sched = IntervalSchedule(60)
-        base = datetime(2026, 1, 1, 0, 0, 0)
-        jittered = add_jitter(base, sched)
-        assert jittered >= base
-        # Max jitter for 60s interval is min(6, 30) = 6 seconds
-        assert jittered <= base + timedelta(seconds=6.1)
-
-    def test_jitter_capped_at_30(self):
-        sched = IntervalSchedule(86400)
-        base = datetime(2026, 1, 1, 0, 0, 0)
-        jittered = add_jitter(base, sched)
-        assert jittered <= base + timedelta(seconds=30.1)
 
 
 def test_describe_schedule_helper():
