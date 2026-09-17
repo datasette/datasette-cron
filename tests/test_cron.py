@@ -1231,8 +1231,11 @@ async def test_trigger_force_runs_through_overlap_skip():
     assert scheduler.is_running("force-trigger")
     assert len(scheduler._running_tasks["force-trigger"]) == 2
 
+    # Wait for both runs to finish (including their run-record writes)
+    # rather than sleeping a fixed amount, which flakes on slow CI runners.
     release.set()
-    await asyncio.sleep(0.2)
+    in_flight = list(scheduler._running_tasks["force-trigger"])
+    await asyncio.wait_for(asyncio.gather(*in_flight), timeout=5.0)
     assert not scheduler.is_running("force-trigger")
 
     await scheduler.shutdown()
