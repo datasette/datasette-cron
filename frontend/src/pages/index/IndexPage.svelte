@@ -186,7 +186,9 @@
 <div class="cron-page">
   <div class="cron-header">
     <h1>Cron Tasks</h1>
-    <p class="cron-subtitle">{tasks.length} registered task{tasks.length !== 1 ? "s" : ""}</p>
+    <p class="cron-subtitle">
+      {tasks.length} registered task{tasks.length !== 1 ? "s" : ""}
+    </p>
   </div>
 
   {#if errorMessage}
@@ -205,17 +207,24 @@
   {#if tasks.length === 0}
     <div class="cron-empty">
       <p>No scheduled tasks registered.</p>
-      <p class="cron-empty-hint">Plugins can register handlers via <code>cron_register_handlers</code> and create tasks via <code>scheduler.add_task()</code>.</p>
+      <p class="cron-empty-hint">
+        Plugins can register handlers via <code>cron_register_handlers</code>
+        and create tasks via <code>scheduler.add_task()</code>.
+      </p>
     </div>
   {:else}
     <div class="cron-tasks">
       {#each tasks as task (task.name)}
         {@const continuous = isContinuous(task)}
-        {@const next = continuous ? { text: "continuous", className: "time-continuous" } : countdown(task.next_run_at, now)}
+        {@const next = continuous
+          ? { text: "continuous", className: "time-continuous" }
+          : countdown(task.next_run_at, now)}
         <div class="cron-task-card" class:disabled={!task.enabled}>
           <div class="task-main">
             <div class="task-name-row">
-              <a href="{appState.basePath}/{task.name}" class="task-name">{task.name}</a>
+              <a href="{appState.basePath}/{task.name}" class="task-name"
+                >{task.name}</a
+              >
               {#if !task.enabled}
                 <span class="badge badge-disabled">disabled</span>
               {/if}
@@ -233,7 +242,10 @@
                   label="Last run status: {task.last_status}"
                 />
               {/if}
-              <span class="next-run {next.className}" title={task.next_run_at ?? ""}>{next.text}</span>
+              <span
+                class="next-run {next.className}"
+                title={task.next_run_at ?? ""}>{next.text}</span
+              >
             </div>
             <div class="task-actions">
               <button
