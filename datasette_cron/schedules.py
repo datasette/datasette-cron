@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import abc
 import json
-import random
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -262,13 +261,3 @@ def describe_schedule(
         return sched.describe(), seconds
     except Exception:
         return f"{schedule_type}: {schedule_config}", None
-
-
-def add_jitter(next_run: datetime, schedule: Schedule) -> datetime:
-    """Add jitter to prevent thundering herd."""
-    if isinstance(schedule, IntervalSchedule):
-        max_jitter = min(schedule.seconds * 0.1, 30.0)
-    else:
-        max_jitter = 5.0  # Small jitter for cron/rrule
-    jitter = random.uniform(0, max_jitter)
-    return next_run + timedelta(seconds=jitter)
