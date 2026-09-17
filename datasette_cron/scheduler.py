@@ -229,50 +229,6 @@ class Scheduler:
         )
         self._wake()
 
-    async def update_task(self, name: str, **kwargs) -> None:
-        existing = await self.internal_db.get_task(name)
-        if not existing:
-            raise ValueError(f"Task not found: {name}")
-
-        updates: dict = {}
-
-        # Schedule or timezone changes require recomputing next_run_at: a
-        # cron-with-tz task's "8am New York" UTC moment shifts when the tz
-        # changes, so we re-derive both schedule_config (in case schedule
-        # changed) and next_run_at together from the resolved (sched, tz) pair.
-        schedule_changed = "schedule" in kwargs
-        timezone_changed = "timezone" in kwargs
-        if schedule_changed or timezone_changed:
-            tz_str = kwargs["timezone"] if timezone_changed else existing.timezone
-            if schedule_changed:
-                sched = parse_schedule(kwargs["schedule"], tz_str=tz_str)
-            else:
-                sched = schedule_from_db(
-                    existing.schedule_type, existing.schedule_config, tz_str
-                )
-            updates["schedule_type"] = sched.schedule_type
-            updates["schedule_config"] = json.dumps(sched.to_dict())
-            updates["next_run_at"] = add_jitter(
-                sched.next_run(_utcnow()), sched
-            ).isoformat()
-
-        if "config" in kwargs:
-            updates["config"] = kwargs["config"]
-        if "timezone" in kwargs:
-            updates["timezone"] = kwargs["timezone"]
-        if "overlap" in kwargs:
-            updates["overlap_policy"] = kwargs["overlap"]
-        if "retry" in kwargs:
-            retry = kwargs["retry"] or {}
-            updates["retry_max"] = retry.get("max_retries", 0)
-            updates["retry_backoff"] = retry.get("backoff", "exponential")
-        if "enabled" in kwargs:
-            updates["enabled"] = 1 if kwargs["enabled"] else 0
-
-        if updates:
-            await self.internal_db.update_task(name, **updates)
-            self._wake()
-
     async def remove_task(self, name: str) -> None:
         await self.internal_db.delete_task(name)
         # Cancel any in-flight executions for this task.

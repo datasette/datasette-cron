@@ -144,7 +144,6 @@ schedule={"rrule": "FREQ=WEEKLY;BYDAY=MO"}
 await scheduler.remove_task("my-task")
 await scheduler.trigger_task("my-task")       # run immediately
 await scheduler.set_enabled("my-task", False) # disable (True to enable)
-await scheduler.update_task("my-task", schedule={"interval": 10})
 ```
 
 ## Data Models
