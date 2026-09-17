@@ -22,5 +22,7 @@ jobs:
     - uses: extractions/setup-just@v3
     - run: npm install --prefix frontend
     - run: just types-check-fresh
+    - run: just check
+    - run: just format-check
     - run: just frontend
     - run: uv run pytest
