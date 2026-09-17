@@ -124,6 +124,10 @@ class InternalDB:
         # SQLite stores enabled as INTEGER 0/1; coerce to bool at the
         # boundary so the dataclass annotation reflects reality.
         d["enabled"] = bool(d["enabled"])
+        # Likewise config: the column is TEXT NOT NULL DEFAULT '{}' and every
+        # write goes through upsert_task/update_task, which json.dumps it -- so
+        # parse it back here and CronTask.config really is the dict it claims.
+        d["config"] = json.loads(d["config"])
         return CronTask(**d)
 
     def _row_to_run(self, row) -> CronRun:
