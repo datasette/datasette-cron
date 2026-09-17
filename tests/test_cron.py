@@ -101,7 +101,7 @@ async def test_add_task_upsert_preserves_next_run_at():
 
 @pytest.mark.asyncio
 async def test_add_task_upsert_schedule_change_recomputes_next_run_at():
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
     ds, scheduler = await _make_scheduler()
 
@@ -120,19 +120,21 @@ async def test_add_task_upsert_schedule_change_recomputes_next_run_at():
 
     # Re-add with a different schedule -- next_run_at must be recomputed
     # from the new schedule, not left ~300s out.
+    before = datetime.now(timezone.utc).replace(tzinfo=None)
     await scheduler.add_task(
         name="reschedule-task",
         handler="test:handler",
         schedule={"interval": 1},
     )
+    after = datetime.now(timezone.utc).replace(tzinfo=None)
 
     task2 = await scheduler.internal_db.get_task("reschedule-task")
     assert json.loads(task2.schedule_config)["seconds"] == 1
     assert task2.next_run_at != original_next_run
-    now = datetime.now(timezone.utc).replace(tzinfo=None)
-    delta = (datetime.fromisoformat(task2.next_run_at) - now).total_seconds()
-    # Derived from the new 1s interval (plus ≤0.1s jitter), not the old 300s
-    assert -1 < delta < 5
+    next_run = datetime.fromisoformat(task2.next_run_at)
+    # Exactly one new-interval second past the add_task call -- derived from
+    # the new 1s interval, not the old 300s.
+    assert before + timedelta(seconds=1) <= next_run <= after + timedelta(seconds=1)
 
     await scheduler.shutdown()
 
@@ -1440,9 +1442,8 @@ async def test_tick_anchors_interval_next_run_to_tick_time():
 
     task = await idb.get_task("drifty")
     next_run = datetime.fromisoformat(task.next_run_at)
-    # Anchored to tick-time: now + 60s (+ up to 10% interval jitter = 6s).
-    assert tick_now + timedelta(seconds=60) <= next_run
-    assert next_run <= tick_now + timedelta(seconds=66)
+    # Anchored to tick-time: exactly now + 60s.
+    assert next_run == tick_now + timedelta(seconds=60)
     # NOT catch-up scheduling: nowhere near the missed 12:01:00 boundary.
     assert next_run > past + timedelta(hours=1)
 
@@ -1479,9 +1480,8 @@ async def test_tick_late_in_slot_does_not_skip_next_cron_boundary():
     task = await idb.get_task("every-minute")
     next_run = datetime.fromisoformat(task.next_run_at)
     boundary = datetime(2026, 1, 1, 12, 1, 0)
-    # Next fire is the immediately-following boundary (+ up to 5s cron jitter),
-    # not two minutes out.
-    assert boundary <= next_run
-    assert next_run <= boundary + timedelta(seconds=5)
+    # Next fire is exactly the immediately-following boundary, not two
+    # minutes out.
+    assert next_run == boundary
 
     await scheduler.shutdown()

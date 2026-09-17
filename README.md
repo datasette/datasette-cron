@@ -243,9 +243,9 @@ durations, retry attempts and error messages:
   not coordinate across processes. Handlers should tolerate being invoked
   twice for the same scheduled slot.
 - **Scheduling is best-effort, not real-time.** `next_run_at` is recomputed
-  from the wall-clock time the scheduler observes the task as due, plus a
-  small jitter, so intervals mean "at least N seconds between scheduled
-  starts" rather than exact phase-locked boundaries.
+  from the wall-clock time the scheduler observes the task as due, so
+  intervals mean "at least N seconds between scheduled starts" rather than
+  exact phase-locked boundaries.
 
 ## OpenTelemetry
 
