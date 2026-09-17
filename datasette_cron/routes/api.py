@@ -1,4 +1,3 @@
-import json
 from dataclasses import asdict
 from typing import Annotated
 
@@ -54,13 +53,9 @@ class EnableRequest(BaseModel):
 
 
 def _task_to_response(task: CronTask) -> dict:
-    config = task.config
-    if isinstance(config, str):
-        config = json.loads(config)
-
     return TaskResponse(
         **task_to_summary(task).model_dump(),
-        config=config,
+        config=task.config,
         schedule_config=task.schedule_config,
         overlap_policy=task.overlap_policy,
         retry_max=task.retry_max,
