@@ -30,6 +30,22 @@ def capture():
         pm.unregister(name="test_events_capture")
 
 
+async def _wait_for_run_events(capture, count, timeout=5.0):
+    """Poll until `count` RunFinishedEvents have been captured, then return
+    them. Polling (rather than a fixed sleep) keeps the overlapping-run
+    tests deterministic without depending on how long a run takes."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        run_events = [e for e in capture if isinstance(e, RunFinishedEvent)]
+        if len(run_events) >= count:
+            return run_events
+        assert loop.time() < deadline, (
+            f"Timed out waiting for {count} RunFinishedEvents, got {len(run_events)}"
+        )
+        await asyncio.sleep(0.01)
+
+
 @pytest.mark.asyncio
 async def test_failing_handler_emits_one_error_event(capture):
     ds, scheduler = await _make_scheduler()
@@ -174,6 +190,145 @@ async def test_manual_trigger_records_actor(capture):
     assert len(run_events) == 1
     assert run_events[0].actor == {"id": "alex"}
     assert run_events[0].concerns == ["alex"]
+
+    await scheduler.shutdown()
+
+
+def _gated_failing_handler(slots):
+    """Return a handler whose Nth call sets `entered[N]`, waits for
+    `release[N]`, then fails -- so a test can interleave two runs of one
+    task and decide which finishes first. `slots` is (entered, release)."""
+    entered, release = slots
+    calls = 0
+
+    async def handler(datasette, config):
+        nonlocal calls
+        index = calls
+        calls += 1
+        entered[index].set()
+        await release[index].wait()
+        raise RuntimeError("boom")
+
+    return handler
+
+
+def _two_slots():
+    return ([asyncio.Event(), asyncio.Event()], [asyncio.Event(), asyncio.Event()])
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_does_not_steal_an_overlapping_actor(capture):
+    """A scheduled run that overlaps a manual one must not take its actor.
+
+    The actor travels with the execution, so the run order cannot change who
+    each event is attributed to. Here the scheduled run is spawned first and
+    finishes first, while Alex's manual run is still in flight.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    slots = _two_slots()
+    entered, release = slots
+    scheduler.register_handlers("test", {"gated": _gated_failing_handler(slots)})
+    await scheduler.add_task(
+        name="overlap-actor-task",
+        handler="test:gated",
+        schedule={"interval": 99999},
+        overlap="allow",
+    )
+
+    # Run 0 -- scheduled: force the task due and run a single tick.
+    await scheduler.internal_db.update_next_run(
+        "overlap-actor-task", "2000-01-01T00:00:00"
+    )
+    await scheduler._tick()
+    await asyncio.wait_for(entered[0].wait(), timeout=2.0)
+
+    # Run 1 -- manual: Alex presses "Run now" mid-flight (force ignores
+    # overlap_policy, so both runs are live at once).
+    await scheduler.trigger_task("overlap-actor-task", actor_id="alex")
+    await asyncio.wait_for(entered[1].wait(), timeout=2.0)
+
+    # The scheduled run finishes first. Its event must carry no actor...
+    release[0].set()
+    run_events = await _wait_for_run_events(capture, 1)
+    assert run_events[0].actor is None
+    assert run_events[0].concerns == []
+
+    # ...and Alex's own run must still carry Alex when it finishes second.
+    release[1].set()
+    run_events = await _wait_for_run_events(capture, 2)
+    assert run_events[1].actor == {"id": "alex"}
+    assert run_events[1].concerns == ["alex"]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_two_manual_triggers_keep_their_own_actors(capture):
+    """Two users triggering the same task must not swap actors.
+
+    Alex triggers first and finishes first; Bob triggers second. Each event
+    is attributed to the person who started that run.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    slots = _two_slots()
+    entered, release = slots
+    scheduler.register_handlers("test", {"gated": _gated_failing_handler(slots)})
+    await scheduler.add_task(
+        name="two-actor-task",
+        handler="test:gated",
+        schedule={"interval": 99999},
+        overlap="allow",
+    )
+
+    await scheduler.trigger_task("two-actor-task", actor_id="alex")
+    await asyncio.wait_for(entered[0].wait(), timeout=2.0)
+    await scheduler.trigger_task("two-actor-task", actor_id="bob")
+    await asyncio.wait_for(entered[1].wait(), timeout=2.0)
+
+    release[0].set()
+    run_events = await _wait_for_run_events(capture, 1)
+    assert run_events[0].concerns == ["alex"]
+
+    release[1].set()
+    run_events = await _wait_for_run_events(capture, 2)
+    assert run_events[1].concerns == ["bob"]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_scheduled_run_after_manual_trigger_has_no_actor(capture):
+    """An actor must not linger past the run it triggered.
+
+    A later scheduled run of the same task is nobody's doing, so its event
+    carries no actor and concerns nobody.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    async def failing_handler(datasette, config):
+        raise RuntimeError("boom")
+
+    scheduler.register_handlers("test", {"fail-handler": failing_handler})
+    await scheduler.add_task(
+        name="later-scheduled-task",
+        handler="test:fail-handler",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("later-scheduled-task", actor_id="alex")
+    run_events = await _wait_for_run_events(capture, 1)
+    assert run_events[0].actor == {"id": "alex"}
+
+    # Now let the schedule fire it: force the task due and run one tick.
+    await scheduler.internal_db.update_next_run(
+        "later-scheduled-task", "2000-01-01T00:00:00"
+    )
+    await scheduler._tick()
+    run_events = await _wait_for_run_events(capture, 2)
+    assert run_events[1].actor is None
+    assert run_events[1].concerns == []
 
     await scheduler.shutdown()
 
