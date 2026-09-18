@@ -253,15 +253,27 @@ class InternalDB:
         await self.db.execute_write_fn(write)
 
     async def record_run_error(
-        self, run_id: int, error_message: str, duration_ms: int
+        self,
+        run_id: int,
+        error_message: str,
+        duration_ms: int,
+        status: str = "error",
     ) -> None:
+        """Close out a run row that did not succeed.
+
+        `status` exists so a cancelled run can be stored as `cancelled`
+        rather than mislabelled `error`: the column and the error-message
+        plumbing are identical either way, so one write path serves both.
+        The column is free-text TEXT, so no new value needs a migration.
+        """
+
         def write(conn):
             conn.execute(
                 """UPDATE datasette_cron_runs
-                SET status = 'error', finished_at = strftime('%Y-%m-%dT%H:%M:%f', 'now'),
+                SET status = ?, finished_at = strftime('%Y-%m-%dT%H:%M:%f', 'now'),
                     error_message = ?, duration_ms = ?
                 WHERE id = ?""",
-                [error_message, duration_ms, run_id],
+                [status, error_message, duration_ms, run_id],
             )
 
         await self.db.execute_write_fn(write)

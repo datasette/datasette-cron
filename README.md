@@ -177,7 +177,7 @@ for run in runs:
 | `enabled`         | `bool`        | Whether task is active                            |
 | `next_run_at`     | `str \| None` | ISO timestamp of next scheduled run               |
 | `last_run_at`     | `str \| None` | ISO timestamp of last run                         |
-| `last_status`     | `str \| None` | `"success"` or `"error"`                          |
+| `last_status`     | `str \| None` | `"success"`, `"error"` or `"cancelled"`           |
 
 ### `CronRun`
 
@@ -187,7 +187,7 @@ for run in runs:
 | `task_name`     | `str`         | Which task this run belongs to         |
 | `started_at`    | `str`         | ISO timestamp                          |
 | `finished_at`   | `str \| None` | ISO timestamp                          |
-| `status`        | `str`         | `"running"`, `"success"`, `"error"`, or `"abandoned"` |
+| `status`        | `str`         | `"running"`, `"success"`, `"error"`, `"cancelled"` or `"abandoned"` |
 | `error_message` | `str \| None` | Error details on failure               |
 | `attempt`       | `int`         | Retry attempt number                   |
 | `duration_ms`   | `int \| None` | Execution time in milliseconds         |
@@ -214,7 +214,10 @@ Stored in Datasette's internal database:
 Only the most recent 100 runs per task are kept (`RUNS_RETAIN_PER_TASK` in
 `datasette_cron/internal_db.py`); older rows are pruned automatically whenever
 a new run starts. Runs left in `"running"` state by a crashed process are
-marked `"abandoned"` on the next startup.
+marked `"abandoned"` on the next startup. A run cancelled by shutdown, by
+`remove_task` or by `overlap_policy="cancel"` is recorded as `"cancelled"` — on
+the run row and on the task's `last_status`, so the stored status always agrees
+with the `cron-run-finished` event that run emits.
 
 Each task's detail page at `/-/cron/<name>` shows this history — statuses,
 durations, retry attempts and error messages:
