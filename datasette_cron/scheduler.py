@@ -94,10 +94,6 @@ class Scheduler:
         # fetched.
         self._last_tick_finished: float | None = None
         self._task_snapshot: list[CronTask] = []
-        # Task name -> actor id of the person who last pressed "Run now",
-        # consumed (popped) the moment the resulting run finishes so it
-        # can't leak onto some later, unrelated run of the same task.
-        self._last_trigger_actor: dict[str, str] = {}
 
     @property
     def internal_db(self) -> InternalDB:
@@ -157,12 +153,16 @@ class Scheduler:
         force: bool = False,
         scheduled_at: str | None = None,
         now: datetime | None = None,
+        actor_id: str | None = None,
     ) -> str:
         """Spawn _execute_task, respecting overlap_policy unless force=True.
 
         Returns the outcome: "started", "skipped" (blocked by overlap), or
         "cancelled" (started after cancelling in-flight runs). Manual
         triggers pass force=True so the user's "Run now" always fires.
+
+        `actor_id` belongs to *this* execution and travels with it, so
+        overlapping runs of one task can never claim each other's actor.
         """
         name = task.name
         running = {t for t in self._running_tasks.get(name, ()) if not t.done()}
@@ -190,6 +190,7 @@ class Scheduler:
                 run_span_kwargs=run_span_kwargs,
                 scheduled_at=scheduled_at,
                 now=now,
+                actor_id=actor_id,
             )
         )
         self._running_tasks.setdefault(name, set()).add(exec_task)
@@ -244,9 +245,9 @@ class Scheduler:
         execution is in flight. The concurrent run is tracked and visible
         in the runs table with status='running'.
 
-        `actor_id`, when given, names who pressed "Run now"; it is stashed
-        in-memory (no migration) and attached to the `RunFinishedEvent` this
-        run produces, if any.
+        `actor_id`, when given, names who pressed "Run now"; it is carried
+        by this execution alone (no migration) and attached to the
+        `RunFinishedEvent` this run produces, if any.
         """
         task = await self.internal_db.get_task(name)
         if not task:
@@ -254,9 +255,7 @@ class Scheduler:
         handler_fn = self.get_handler(task.handler)
         if not handler_fn:
             raise ValueError(f"Handler not found: {task.handler}")
-        if actor_id:
-            self._last_trigger_actor[name] = actor_id
-        self._spawn_execution(task, handler_fn, force=True)
+        self._spawn_execution(task, handler_fn, force=True, actor_id=actor_id)
 
     async def set_enabled(self, name: str, enabled: bool) -> None:
         """Enable or disable a task. A no-op for unknown task names."""
@@ -428,6 +427,7 @@ class Scheduler:
         run_span_kwargs: dict | None = None,
         scheduled_at: str | None = None,
         now: datetime | None = None,
+        actor_id: str | None = None,
     ) -> None:
         name = task.name
         config = task.config
@@ -594,6 +594,7 @@ class Scheduler:
                         trace_id,
                         span_id,
                         trigger,
+                        actor_id,
                     )
         finally:
             # Remove ourselves from the in-flight set; clean up empty entries.
@@ -614,6 +615,7 @@ class Scheduler:
         trace_id: str | None,
         span_id: str | None,
         trigger: str,
+        actor_id: str | None,
     ) -> None:
         """Fire `RunFinishedEvent` on error/cancel/recovery, never on a
         routine success.
@@ -623,13 +625,11 @@ class Scheduler:
         (`get_task` in `trigger_task`) and never refreshed mid-run -- so
         `task.last_status` is the status *before* this run, exactly the
         "previous status" the transition rule needs.
-        """
-        # Pop unconditionally (not only when we go on to emit) -- a manual
-        # trigger's stashed actor must not leak onto some later, unrelated
-        # run of the same task just because *this* run was a routine
-        # success that emits nothing.
-        actor_id = self._last_trigger_actor.pop(task.name, None)
 
+        `actor_id` was handed to the execution that is finishing, so it can
+        only ever describe this run: scheduled runs pass None, and two
+        overlapping manual runs each keep their own.
+        """
         previous = task.last_status
         if status == "success" and previous not in ("error", "cancelled"):
             return
