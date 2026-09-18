@@ -51,8 +51,8 @@ SCOPE = "datasette_cron"
 CONFIG_SECRET = "cfg-secret-hunter2-XYZZY"
 RETURN_SENTINEL = "handler-return-sentinel-XYZZY"
 EXC_MESSAGE = "exc-message-sentinel-XYZZY"
-# A distinctive, non-numeric fragment of one task's schedule_config.
-SCHEDULE_SENTINEL = "FREQ=YEARLY;BYDAY=TU"
+# A distinctive fragment of one task's schedule_config.
+SCHEDULE_SENTINEL = "43 4 * * SAT"
 
 
 def test_package_never_imports_the_sdk():
@@ -196,9 +196,9 @@ async def test_registry_conformance(otel_spans, otel_metrics, monkeypatch):
             name="wf-ok", handler=f"{p}:ok", schedule=interval, config=secret_config
         )
         await scheduler.add_task(
-            name="wf-rrule",
+            name="wf-cron",
             handler=f"{p}:ok",
-            schedule={"rrule": SCHEDULE_SENTINEL},
+            schedule=SCHEDULE_SENTINEL,
             config=secret_config,
         )
         await scheduler.add_task(

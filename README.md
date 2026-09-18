@@ -132,11 +132,11 @@ schedule="0 8 * * *"             # daily at 8am
 schedule="*/5 * * * *"           # every 5 minutes
 ```
 
-**RFC 5545 RRULE**:
-
-```python
-schedule={"rrule": "FREQ=WEEKLY;BYDAY=MO"}
-```
+Interval and cron are the only schedule types. An `rrule` type existed in
+0.0.1a2 and was removed: a task whose stored row still has
+`schedule_type="rrule"` can no longer be scheduled, so the scheduler disables
+it with `last_status="error"` on the next tick. Re-create it with a cron
+schedule.
 
 ### Other Methods
 
@@ -168,7 +168,7 @@ for run in runs:
 | `name`            | `str`         | Unique task identifier                            |
 | `handler`         | `str`         | Handler reference (e.g., `"myplugin:my-handler"`) |
 | `config`          | `dict`        | JSON config passed to handler                     |
-| `schedule_type`   | `str`         | `"interval"`, `"cron"`, or `"rrule"`              |
+| `schedule_type`   | `str`         | `"interval"` or `"cron"`                          |
 | `schedule_config` | `str`         | JSON schedule parameters                          |
 | `timezone`        | `str \| None` | IANA timezone                                     |
 | `overlap_policy`  | `str`         | `"skip"` or `"allow"`                             |
