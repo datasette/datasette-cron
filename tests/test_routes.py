@@ -229,9 +229,6 @@ async def test_schedule_description_all_types_and_fallback():
         name="interval-task", handler="test:h", schedule={"interval": 300}
     )
     await scheduler.add_task(name="cron-task", handler="test:h", schedule="0 8 * * *")
-    await scheduler.add_task(
-        name="rrule-task", handler="test:h", schedule={"rrule": "FREQ=DAILY"}
-    )
     # A row with unparseable schedule_config, as if written by a buggy or
     # future version -- exercises the except-fallback branch.
     await scheduler.internal_db.upsert_task(
@@ -245,7 +242,6 @@ async def test_schedule_description_all_types_and_fallback():
     expected = {
         "interval-task": ("every 5m", 300),
         "cron-task": ("cron: 0 8 * * *", None),
-        "rrule-task": ("rrule: FREQ=DAILY", None),
         "broken-task": ("interval: not json", None),
     }
 

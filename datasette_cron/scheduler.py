@@ -375,7 +375,7 @@ class Scheduler:
                 #   means a scheduler that was down never tries to catch up on
                 #   missed slots (no burst of back-to-back runs after
                 #   downtime).
-                # - cron/rrule next-runs are absolute wall-clock times, so a
+                # - cron next-runs are absolute wall-clock times, so a
                 #   slot is only skipped when the tick itself is more than a
                 #   full period late — acceptable for a best-effort scheduler.
                 sched = schedule_from_db(

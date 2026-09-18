@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -10,7 +10,6 @@ import pytest
 from datasette_cron.schedules import (
     CronSchedule,
     IntervalSchedule,
-    RRuleSchedule,
     parse_schedule,
     schedule_from_db,
 )
@@ -77,80 +76,6 @@ class TestIntervalSchedule:
         assert sched.to_dict() == {"seconds": 120}
 
 
-class TestRRuleSchedule:
-    def test_next_run_weekly(self):
-        sched = RRuleSchedule("FREQ=WEEKLY;BYDAY=MO")
-        # Tuesday
-        after = datetime(2026, 3, 31, 10, 0, 0)
-        next_run = sched.next_run(after)
-        # Next Monday
-        assert next_run.weekday() == 0  # Monday
-        assert next_run > after
-
-    def test_describe(self):
-        sched = RRuleSchedule("FREQ=DAILY")
-        assert "FREQ=DAILY" in sched.describe()
-
-    def test_to_dict(self):
-        sched = RRuleSchedule("FREQ=DAILY")
-        assert sched.to_dict() == {"rrule": "FREQ=DAILY"}
-
-    def test_embedded_dtstart_is_authoritative(self):
-        sched = RRuleSchedule("DTSTART:20260101T080000\nRRULE:FREQ=DAILY")
-        # Before the anchor: first occurrence is DTSTART itself
-        assert sched.next_run(datetime(2025, 12, 1)) == datetime(2026, 1, 1, 8, 0)
-        # After the anchor: occurrences stay phased on the 8:00 anchor
-        assert sched.next_run(datetime(2026, 1, 5, 12, 0)) == datetime(2026, 1, 6, 8, 0)
-        # Deterministic: same `after` gives the same answer (no re-anchoring)
-        assert sched.next_run(datetime(2026, 1, 5, 12, 0)) == sched.next_run(
-            datetime(2026, 1, 5, 12, 0)
-        )
-
-    def test_bounded_count_with_dtstart_exhausts(self):
-        sched = RRuleSchedule("DTSTART:20260101T080000\nRRULE:FREQ=DAILY;COUNT=2")
-        first = sched.next_run(datetime(2025, 12, 31))
-        assert first == datetime(2026, 1, 1, 8, 0)
-        second = sched.next_run(first)
-        assert second == datetime(2026, 1, 2, 8, 0)
-        # Exhausted: falls back to far-future instead of repeating forever
-        after_last = sched.next_run(second)
-        assert after_last == second + timedelta(days=365)
-
-    def test_bounded_rule_without_dtstart_rejected(self):
-        with pytest.raises(ValueError, match="DTSTART"):
-            RRuleSchedule("FREQ=DAILY;COUNT=3")
-        with pytest.raises(ValueError, match="DTSTART"):
-            RRuleSchedule("FREQ=DAILY;UNTIL=20270101T000000")
-
-    def test_embedded_naive_dtstart_with_tz(self):
-        # Naive DTSTART is interpreted in the schedule's timezone
-        sched = RRuleSchedule(
-            "DTSTART:20260101T080000\nRRULE:FREQ=DAILY",
-            tz=ZoneInfo("America/New_York"),
-        )
-        # 2026-01-05 12:00 UTC is 07:00 EST; next 8am ET is 13:00 UTC same day
-        next_run = sched.next_run(datetime(2026, 1, 5, 12, 0))
-        assert next_run.tzinfo is None
-        assert next_run == datetime(2026, 1, 5, 13, 0)
-
-    def test_embedded_aware_dtstart_returns_naive_utc(self):
-        # Aware DTSTART (TZID) with no schedule tz configured
-        sched = RRuleSchedule(
-            "DTSTART;TZID=America/New_York:20260101T080000\nRRULE:FREQ=DAILY"
-        )
-        # Next 8am ET after 2026-01-05 00:00 UTC is 2026-01-05 13:00 UTC
-        next_run = sched.next_run(datetime(2026, 1, 5, 0, 0))
-        assert next_run.tzinfo is None
-        assert next_run == datetime(2026, 1, 5, 13, 0)
-
-    def test_unbounded_no_dtstart_stays_relative(self):
-        # Regression guard for the no-DTSTART path: still relative to `after`
-        sched = RRuleSchedule("FREQ=WEEKLY;BYDAY=MO")
-        after = datetime(2026, 3, 31, 10, 0, 0)  # Tuesday
-        next_run = sched.next_run(after)
-        assert next_run == datetime(2026, 4, 6, 10, 0, 0)  # next Monday
-
-
 class TestParseSchedule:
     def test_parse_cron_string(self):
         sched = parse_schedule("0 8 * * *")
@@ -160,10 +85,6 @@ class TestParseSchedule:
         sched = parse_schedule({"interval": 60})
         assert isinstance(sched, IntervalSchedule)
         assert sched.seconds == 60
-
-    def test_parse_rrule_dict(self):
-        sched = parse_schedule({"rrule": "FREQ=DAILY"})
-        assert isinstance(sched, RRuleSchedule)
 
     def test_parse_with_timezone(self):
         sched = parse_schedule("0 8 * * *", tz_str="America/New_York")
@@ -185,10 +106,6 @@ class TestScheduleFromDb:
         sched = schedule_from_db("interval", '{"seconds": 300}')
         assert isinstance(sched, IntervalSchedule)
         assert sched.seconds == 300
-
-    def test_rrule_from_db(self):
-        sched = schedule_from_db("rrule", '{"rrule": "FREQ=WEEKLY"}')
-        assert isinstance(sched, RRuleSchedule)
 
     def test_unknown_type_raises(self):
         with pytest.raises(ValueError):
@@ -227,26 +144,6 @@ class TestNaiveUtcContract:
             assert next_run == datetime(2026, 7, 2, 12, 0)
             assert next_run > now
 
-    def test_rrule_tz_schedule_ignores_process_tz(self):
-        with _forced_process_tz("Asia/Tokyo"):
-            sched = parse_schedule(
-                {"rrule": "FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0"},
-                tz_str="America/New_York",
-            )
-            now = datetime(2026, 7, 1, 20, 36)
-            next_run = sched.next_run(now)
-            assert next_run.tzinfo is None
-            assert next_run == datetime(2026, 7, 2, 12, 0)
-            assert next_run > now
-
-    def test_rrule_no_tz_still_returns_naive(self):
-        with _forced_process_tz("Asia/Tokyo"):
-            sched = RRuleSchedule("FREQ=DAILY;BYHOUR=8;BYMINUTE=0;BYSECOND=0")
-            now = datetime(2026, 7, 1, 20, 36)
-            next_run = sched.next_run(now)
-            assert next_run.tzinfo is None
-            assert next_run == datetime(2026, 7, 2, 8, 0)
-
 
 def test_describe_schedule_helper():
     from datasette_cron.schedules import describe_schedule
@@ -254,10 +151,6 @@ def test_describe_schedule_helper():
     assert describe_schedule("interval", '{"seconds": 300}') == ("every 5m", 300)
     assert describe_schedule("cron", '{"expression": "0 8 * * *"}') == (
         "cron: 0 8 * * *",
-        None,
-    )
-    assert describe_schedule("rrule", '{"rrule": "FREQ=DAILY"}') == (
-        "rrule: FREQ=DAILY",
         None,
     )
     # Timezone is included in the description for tz-aware schedules
