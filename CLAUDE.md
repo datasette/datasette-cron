@@ -37,7 +37,7 @@ datasette_cron/
 ├── page_data.py             # Pydantic models (page data + API contracts)
 ├── internal_db.py           # Database operations wrapper
 ├── internal_migrations.py   # sqlite-migrate schema
-├── schedules.py             # CronSchedule, IntervalSchedule, RRuleSchedule
+├── schedules.py             # CronSchedule, IntervalSchedule
 ├── scheduler.py             # Scheduler class: loop, execution, retry, CRUD API
 ├── telemetry.py             # OTel tracer/meter, instruments, gauge callbacks
 ├── telemetry_registry.py    # Every span/metric name (docs + conformance test read it)
@@ -62,7 +62,7 @@ frontend/src/
 
 **Tasks:** DB rows in `datasette_cron_tasks`. Reference a handler by name + JSON config + schedule. Created via `datasette._cron_scheduler.add_task(...)`.
 
-**Schedules:** Three types — cron string (`"0 8 * * *"`), interval (`{"interval": 60}`), rrule (`{"rrule": "FREQ=WEEKLY;BYDAY=MO"}`). All support timezone.
+**Schedules:** Two types — cron string (`"0 8 * * *"`) and interval (`{"interval": 60}`). Both support timezone.
 
 ## Routes
 
