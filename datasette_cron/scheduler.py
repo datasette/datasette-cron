@@ -17,7 +17,7 @@ from . import telemetry
 from .events import RunFinishedEvent
 from .internal_db import InternalDB
 from .models import CronTask
-from .schedules import add_jitter, parse_schedule, schedule_from_db
+from .schedules import parse_schedule, schedule_from_db
 from .telemetry import tracer
 from .telemetry_registry import (
     ATTEMPT,
@@ -213,7 +213,7 @@ class Scheduler:
         retry = retry or {}
         sched = parse_schedule(schedule, tz_str=timezone)
         now = _utcnow()
-        next_run = add_jitter(sched.next_run(now), sched)
+        next_run = sched.next_run(now)
 
         await self.internal_db.upsert_task(
             name=name,
@@ -383,7 +383,7 @@ class Scheduler:
             sched = schedule_from_db(
                 task.schedule_type, task.schedule_config, task.timezone
             )
-            next_run = add_jitter(sched.next_run(now), sched)
+            next_run = sched.next_run(now)
             await self.internal_db.update_next_run(name, next_run.isoformat())
 
         return stats
