@@ -333,58 +333,89 @@ class Scheduler:
 
         for task in due_tasks:
             name = task.name
-            handler_fn = self.get_handler(task.handler)
+            # Every task is evaluated inside its own try/except: get_due_tasks
+            # is ORDER BY next_run_at, so without this one unusable row (a
+            # schedule that no longer parses, a missing timezone, a
+            # hand-edited next_run_at) would abort the whole tick and starve
+            # every task queued behind it.
+            try:
+                handler_fn = self.get_handler(task.handler)
 
-            # Lag is recorded for every due task, spawned or not, so an
-            # overlap-starved task still shows its slot drifting.
-            if task.next_run_at:
-                telemetry.run_lag.record(
-                    _lag_seconds(task.next_run_at, now), {TASK: name}
-                )
+                # Lag is recorded for every due task, spawned or not, so an
+                # overlap-starved task still shows its slot drifting.
+                if task.next_run_at:
+                    telemetry.run_lag.record(
+                        _lag_seconds(task.next_run_at, now), {TASK: name}
+                    )
 
-            if not handler_fn:
-                logger.error(
-                    "Handler %r not found for task %r (available: %s), disabling",
-                    task.handler,
-                    name,
-                    list(self._handler_registry.keys()),
+                if not handler_fn:
+                    logger.error(
+                        "Handler %r not found for task %r (available: %s), disabling",
+                        task.handler,
+                        name,
+                        list(self._handler_registry.keys()),
+                    )
+                    await self.internal_db.update_task(
+                        name, enabled=0, last_status="error"
+                    )
+                    stats.disabled += 1
+                    continue
+
+                # The next run is computed *before* spawning: if the stored
+                # schedule cannot be reconstructed we must not start work we
+                # would then be unable to reschedule, because next_run_at
+                # would stay in the past and the task would re-fire on every
+                # tick.
+                #
+                # The new next_run is deliberately anchored to the tick's
+                # wall-clock `now`, not the task's stored (scheduled)
+                # next_run_at:
+                # - intervals mean "at least N seconds between scheduled
+                #   starts", so their phase drifts by tick latency; this also
+                #   means a scheduler that was down never tries to catch up on
+                #   missed slots (no burst of back-to-back runs after
+                #   downtime).
+                # - cron/rrule next-runs are absolute wall-clock times, so a
+                #   slot is only skipped when the tick itself is more than a
+                #   full period late — acceptable for a best-effort scheduler.
+                sched = schedule_from_db(
+                    task.schedule_type, task.schedule_config, task.timezone
                 )
-                await self.internal_db.update_task(name, enabled=0, last_status="error")
+                next_run = sched.next_run(now)
+
+                outcome = self._spawn_execution(
+                    task, handler_fn, scheduled_at=task.next_run_at, now=now
+                )
+                if outcome == "skipped":
+                    stats.skipped += 1
+                    logger.debug(
+                        "Skipped %r: overlap_policy=%s and a run is in flight",
+                        name,
+                        task.overlap_policy,
+                    )
+                else:
+                    stats.spawned += 1
+                    if outcome == "cancelled":
+                        stats.cancelled += 1
+
+                # Advance next_run_at regardless of whether we spawned — a
+                # skipped run still consumes its scheduling slot.
+                await self.internal_db.update_next_run(name, next_run.isoformat())
+            except Exception:
+                # Disable rather than retry: whatever is wrong with this row
+                # will still be wrong next tick, and leaving it enabled means
+                # re-spawning it every five seconds forever. Disabling drops
+                # it out of get_due_tasks, and the error status surfaces on
+                # the task's detail page.
+                logger.exception("Error evaluating task %r in tick, disabling", name)
+                try:
+                    await self.internal_db.update_task(
+                        name, enabled=0, last_status="error"
+                    )
+                except Exception:
+                    logger.exception("Could not disable broken task %r", name)
                 stats.disabled += 1
                 continue
-
-            outcome = self._spawn_execution(
-                task, handler_fn, scheduled_at=task.next_run_at, now=now
-            )
-            if outcome == "skipped":
-                stats.skipped += 1
-                logger.debug(
-                    "Skipped %r: overlap_policy=%s and a run is in flight",
-                    name,
-                    task.overlap_policy,
-                )
-            else:
-                stats.spawned += 1
-                if outcome == "cancelled":
-                    stats.cancelled += 1
-
-            # Advance next_run_at regardless of whether we spawned — a skipped
-            # run still consumes its scheduling slot.
-            #
-            # The new next_run is deliberately anchored to the tick's
-            # wall-clock `now`, not the task's stored (scheduled) next_run_at:
-            # - intervals mean "at least N seconds between scheduled starts",
-            #   so their phase drifts by tick latency; this also means a
-            #   scheduler that was down never tries to catch up on missed
-            #   slots (no burst of back-to-back runs after downtime).
-            # - cron/rrule next-runs are absolute wall-clock times, so a slot
-            #   is only skipped when the tick itself is more than a full
-            #   period late — acceptable for a best-effort scheduler.
-            sched = schedule_from_db(
-                task.schedule_type, task.schedule_config, task.timezone
-            )
-            next_run = sched.next_run(now)
-            await self.internal_db.update_next_run(name, next_run.isoformat())
 
         return stats
 

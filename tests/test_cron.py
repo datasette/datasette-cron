@@ -1484,3 +1484,199 @@ async def test_tick_late_in_slot_does_not_skip_next_cron_boundary():
     assert next_run == boundary
 
     await scheduler.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# _tick per-task isolation: one unusable row must not starve the others
+# ---------------------------------------------------------------------------
+
+
+async def _write_broken_schedule(scheduler, name, **columns):
+    """Force a task row into a state add_task would have rejected.
+
+    add_task validates the schedule on the way in, so the only way to
+    reproduce a row written by an older version (or hand-edited) is to update
+    the columns directly.
+    """
+    await scheduler.internal_db.update_task(name, **columns)
+
+
+@pytest.mark.asyncio
+async def test_tick_isolates_task_with_unparseable_schedule():
+    """A stored schedule that no longer parses disables its own task and
+    leaves every other due task alone.
+
+    get_due_tasks is ORDER BY next_run_at, so the broken row is evaluated
+    first: before per-task isolation its exception escaped _tick and the
+    healthy task queued behind it never ran."""
+    ds, scheduler = await _make_scheduler()
+
+    ran = asyncio.Event()
+
+    async def ok_handler(datasette, config):
+        ran.set()
+
+    async def never(datasette, config):  # pragma: no cover - must not be called
+        raise AssertionError("broken task should not have been spawned")
+
+    scheduler.register_handlers("test", {"ok": ok_handler, "never": never})
+    await scheduler.add_task(
+        name="broken", handler="test:never", schedule={"interval": 60}
+    )
+    await scheduler.add_task(
+        name="healthy", handler="test:ok", schedule={"interval": 60}
+    )
+
+    idb = scheduler.internal_db
+    # An unrecognised schedule_type is exactly what a row written by an older
+    # release looks like once that schedule type is removed from the code.
+    await _write_broken_schedule(
+        scheduler,
+        "broken",
+        schedule_type="no-such-schedule-type",
+        schedule_config="{}",
+        next_run_at="2000-01-01T00:00:00",
+    )
+    # Ordered after the broken row, so it is the one that used to be starved.
+    await idb.update_next_run("healthy", "2000-01-01T00:00:01")
+
+    stats = await scheduler._tick()
+
+    assert stats.due == 2
+    assert stats.disabled == 1
+    assert stats.spawned == 1
+
+    await asyncio.wait_for(ran.wait(), timeout=2.0)
+
+    broken = await idb.get_task("broken")
+    assert broken.enabled is False
+    assert broken.last_status == "error"
+
+    healthy = await idb.get_task("healthy")
+    assert healthy.enabled is True
+    # Its slot was consumed and advanced past the stale 2000 value.
+    assert healthy.next_run_at > "2001"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_disables_broken_task_instead_of_respawning_it():
+    """The broken task is never spawned, and repeated ticks do not retry it.
+
+    Before this change the tick spawned the handler and only then tried to
+    recompute next_run_at -- so the row stayed due and re-fired on every tick,
+    forever."""
+    ds, scheduler = await _make_scheduler()
+
+    calls = 0
+
+    async def counting(datasette, config):
+        nonlocal calls
+        calls += 1
+
+    scheduler.register_handlers("test", {"counting": counting})
+    await scheduler.add_task(
+        name="loop-forever", handler="test:counting", schedule={"interval": 60}
+    )
+    await _write_broken_schedule(
+        scheduler,
+        "loop-forever",
+        schedule_type="no-such-schedule-type",
+        schedule_config="{}",
+        next_run_at="2000-01-01T00:00:00",
+    )
+
+    for _ in range(3):
+        stats = await scheduler._tick()
+        assert stats.spawned == 0
+
+    # Disabled on the first tick, so the following two ticks saw nothing due.
+    assert calls == 0
+    task = await scheduler.internal_db.get_task("loop-forever")
+    assert task.enabled is False
+    assert task.last_status == "error"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_survives_malformed_next_run_at():
+    """A next_run_at that isn't a valid ISO timestamp fails in _lag_seconds,
+    before any spawn. The tick must still run the other due task."""
+    ds, scheduler = await _make_scheduler()
+
+    ran = asyncio.Event()
+
+    async def ok_handler(datasette, config):
+        ran.set()
+
+    async def never(datasette, config):  # pragma: no cover - must not be called
+        raise AssertionError("task with a malformed next_run_at should not spawn")
+
+    scheduler.register_handlers("test", {"ok": ok_handler, "never": never})
+    await scheduler.add_task(
+        name="bad-timestamp", handler="test:never", schedule={"interval": 60}
+    )
+    await scheduler.add_task(name="fine", handler="test:ok", schedule={"interval": 60})
+
+    idb = scheduler.internal_db
+    # Sorts before the healthy row (so it is evaluated first) but is not a
+    # timestamp datetime.fromisoformat can read.
+    await idb.update_task("bad-timestamp", next_run_at="2000-01-01 nonsense")
+    await idb.update_next_run("fine", "2000-01-01T00:00:01")
+
+    stats = await scheduler._tick()
+
+    assert stats.due == 2
+    assert stats.disabled == 1
+    assert stats.spawned == 1
+
+    await asyncio.wait_for(ran.wait(), timeout=2.0)
+
+    bad = await idb.get_task("bad-timestamp")
+    assert bad.enabled is False
+    assert bad.last_status == "error"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tick_does_not_spawn_when_next_run_cannot_be_computed():
+    """next_run is computed before the spawn: a schedule that parses but
+    cannot produce a next run must leave the handler untouched rather than
+    starting work the tick cannot reschedule."""
+    ds, scheduler = await _make_scheduler()
+
+    calls = 0
+
+    async def counting(datasette, config):
+        nonlocal calls
+        calls += 1
+
+    scheduler.register_handlers("test", {"counting": counting})
+    await scheduler.add_task(
+        name="exhausted", handler="test:counting", schedule={"interval": 60}
+    )
+    # Valid type, corrupt config: schedule_from_db raises on the missing key.
+    await _write_broken_schedule(
+        scheduler,
+        "exhausted",
+        schedule_config="{}",
+        next_run_at="2000-01-01T00:00:00",
+    )
+
+    stats = await scheduler._tick()
+
+    assert stats.spawned == 0
+    assert stats.disabled == 1
+    assert calls == 0
+
+    task = await scheduler.internal_db.get_task("exhausted")
+    assert task.enabled is False
+    assert task.last_status == "error"
+    # next_run_at was never advanced -- but the task is disabled, so it is no
+    # longer due and cannot re-fire.
+    assert task.next_run_at == "2000-01-01T00:00:00"
+
+    await scheduler.shutdown()
