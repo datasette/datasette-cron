@@ -5,11 +5,29 @@ Install: copy this file into your plugins directory, or set DATASETTE_LOAD_PLUGI
 
 Usage:
     datasette tmp.db --plugins-dir=samples/
+
+Also demonstrates the smallest possible custom telemetry a handler plugin
+can add: one counter. Like datasette-cron itself this uses
+`opentelemetry-api` only - with no provider installed the instrument is a
+no-op, and under `just dev-otel` the counter shows up alongside the
+`datasette_cron.*` metrics.
 """
 
 from datetime import datetime
 
 from datasette import hookimpl
+from opentelemetry import metrics
+
+# The meter gets its own instrumentation scope, named after the plugin
+# (the `plugin` half of the handler reference), so a consumer can filter
+# this plugin's signals independently of datasette-cron's.
+meter = metrics.get_meter("cron_debug")
+
+rows_inserted = meter.create_counter(
+    "cron_debug.rows",
+    unit="{row}",
+    description="Rows the debug task has inserted",
+)
 
 
 async def insert_debug_row(datasette, config):
@@ -20,6 +38,9 @@ async def insert_debug_row(datasette, config):
         "INSERT INTO cron_debug (timestamp, message) VALUES (?, ?)",
         [datetime.now().isoformat(), "tick from datasette-cron-debug"],
     )
+    # The database name comes from task config, so it is a bounded value
+    # and safe as a metric dimension.
+    rows_inserted.add(1, {"cron_debug.database": db_name})
 
 
 @hookimpl

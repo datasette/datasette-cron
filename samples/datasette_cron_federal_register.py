@@ -6,12 +6,38 @@ Install: copy this file into your plugins directory
 
 Usage:
     datasette tmp.db --plugins-dir=samples/
+
+Also demonstrates a handler plugin adding its own telemetry:
+`opentelemetry-api` only (no provider, no SDK - everything below is a
+no-op until whoever runs Datasette turns tracing on). Context propagation
+is via contextvars, so the spans opened here nest inside datasette-cron's
+`datasette_cron.attempt` span automatically:
+
+    datasette_cron.attempt
+    └── cron_federal_register.page        one per API page
+        ├── cron_federal_register.fetch   the HTTP request
+        └── cron_federal_register.write   the single upsert query
+            └── db.query                  core's span, nested here in turn
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import httpx2
 from datasette import hookimpl
+from opentelemetry import metrics, trace
+
+# Own instrumentation scope, named after the plugin (the `plugin` half of
+# the handler reference).
+tracer = trace.get_tracer("cron_federal_register")
+meter = metrics.get_meter("cron_federal_register")
+
+documents_upserted = meter.create_counter(
+    "cron_federal_register.documents",
+    unit="{document}",
+    description="Federal Register documents upserted into the table",
+)
+
 
 API_URL = "https://www.federalregister.gov/api/v1/documents.json"
 
@@ -36,37 +62,80 @@ async def fetch_federal_register(datasette, config):
         page = 1
         while True:
             params["page"] = page
-            resp = await client.get(API_URL, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            # One span per API page. An exception raised inside a span's
+            # context manager is recorded on it and marks it ERROR - both
+            # are default behavior.
+            with tracer.start_as_current_span(
+                "cron_federal_register.page",
+                attributes={
+                    "cron_federal_register.page": page,
+                    "cron_federal_register.backfill": backfill,
+                },
+            ) as span:
+                # The HTTP request gets its own span, so network time and
+                # write time are separable in the trace waterfall.
+                with tracer.start_as_current_span(
+                    "cron_federal_register.fetch"
+                ) as fetch_span:
+                    resp = await client.get(API_URL, params=params)
+                    fetch_span.set_attribute(
+                        "http.response.status_code", resp.status_code
+                    )
+                    resp.raise_for_status()
+                data = resp.json()
 
-            results = data.get("results", [])
-            if not results:
-                break
+                results = data.get("results", [])
+                span.set_attribute("cron_federal_register.documents", len(results))
+                if not results:
+                    break
 
-            for doc in results:
-                agencies = ", ".join(
-                    a.get("name") or a.get("raw_name", "")
-                    for a in (doc.get("agencies") or [])
-                )
-                await db.execute_write(
-                    """
-                    INSERT OR REPLACE INTO federal_register_documents
-                        (document_number, title, type, abstract, agencies,
-                         publication_date, html_url, pdf_url, fetched_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    [
-                        doc.get("document_number"),
-                        doc.get("title"),
-                        doc.get("type"),
-                        doc.get("abstract"),
-                        agencies,
-                        doc.get("publication_date"),
-                        doc.get("html_url"),
-                        doc.get("pdf_url"),
-                        datetime.now(timezone.utc).isoformat(),
-                    ],
+                fetched_at = datetime.now(timezone.utc).isoformat()
+                rows = [
+                    {
+                        "document_number": doc.get("document_number"),
+                        "title": doc.get("title"),
+                        "type": doc.get("type"),
+                        "abstract": doc.get("abstract"),
+                        "agencies": ", ".join(
+                            a.get("name") or a.get("raw_name", "")
+                            for a in (doc.get("agencies") or [])
+                        ),
+                        "publication_date": doc.get("publication_date"),
+                        "html_url": doc.get("html_url"),
+                        "pdf_url": doc.get("pdf_url"),
+                        "fetched_at": fetched_at,
+                    }
+                    for doc in results
+                ]
+
+                # One write per page: json_each() unrolls the JSON array
+                # so the whole page upserts in a single query, instead of
+                # one INSERT (and one trip through the write queue) per
+                # document.
+                with tracer.start_as_current_span(
+                    "cron_federal_register.write",
+                    attributes={"cron_federal_register.rows": len(rows)},
+                ):
+                    await db.execute_write(
+                        """
+                        INSERT OR REPLACE INTO federal_register_documents
+                            (document_number, title, type, abstract, agencies,
+                             publication_date, html_url, pdf_url, fetched_at)
+                        SELECT
+                            value ->> 'document_number', value ->> 'title',
+                            value ->> 'type', value ->> 'abstract',
+                            value ->> 'agencies', value ->> 'publication_date',
+                            value ->> 'html_url', value ->> 'pdf_url',
+                            value ->> 'fetched_at'
+                        FROM json_each(?)
+                        """,
+                        [json.dumps(rows)],
+                    )
+
+                # Backfill vs poll is the dimension an operator would
+                # actually chart these by, and a bounded one.
+                documents_upserted.add(
+                    len(rows), {"cron_federal_register.backfill": backfill}
                 )
 
             # Only paginate during backfill

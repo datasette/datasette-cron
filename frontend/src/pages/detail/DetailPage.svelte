@@ -188,6 +188,23 @@
     if (ms < 1000) return `${ms}ms`;
     return `${(ms / 1000).toFixed(1)}s`;
   }
+
+  // Trace ids only exist when the deployment runs with a tracing provider,
+  // so the column is hidden entirely (screenshots, uninstrumented installs)
+  // unless at least one listed run carries one.
+  const traceUrl = pageData.trace_url;
+  const hasTraces = $derived(runs.some((r) => r.trace_id));
+
+  function traceHref(trace_id: string, span_id: string | null): string | null {
+    if (!traceUrl) return null;
+    return traceUrl
+      .replace("{trace_id}", trace_id)
+      .replace("{span_id}", span_id ?? "");
+  }
+
+  function copyTraceId(trace_id: string) {
+    navigator.clipboard?.writeText(trace_id);
+  }
 </script>
 
 <div class="cron-page">
@@ -284,6 +301,9 @@
           <th>Duration</th>
           <th>Attempt</th>
           <th>Error</th>
+          {#if hasTraces}
+            <th>Trace</th>
+          {/if}
         </tr>
       </thead>
       <tbody>
@@ -299,6 +319,27 @@
             <td class="mono">{formatDuration(run.duration_ms)}</td>
             <td>{run.attempt}</td>
             <td class="error-cell">{run.error_message ?? ""}</td>
+            {#if hasTraces}
+              <td class="mono">
+                {#if run.trace_id}
+                  {@const href = traceHref(run.trace_id, run.span_id)}
+                  {#if href}
+                    <a {href} title={run.trace_id}>
+                      {run.trace_id.slice(0, 8)}
+                    </a>
+                  {:else}
+                    {@const trace_id = run.trace_id}
+                    <button
+                      class="trace-copy"
+                      title="{run.trace_id} (click to copy)"
+                      onclick={() => copyTraceId(trace_id)}
+                    >
+                      {run.trace_id.slice(0, 8)}
+                    </button>
+                  {/if}
+                {/if}
+              </td>
+            {/if}
           </tr>
         {/each}
       </tbody>
@@ -406,5 +447,13 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .trace-copy {
+    border: none;
+    background: none;
+    padding: 0;
+    cursor: copy;
+    color: inherit;
+    font: inherit;
   }
 </style>

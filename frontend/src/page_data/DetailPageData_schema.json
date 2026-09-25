@@ -54,6 +54,28 @@
             }
           ],
           "title": "Duration Ms"
+        },
+        "trace_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Trace Id"
+        },
+        "span_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Span Id"
         }
       },
       "required": [
@@ -64,7 +86,9 @@
         "status",
         "error_message",
         "attempt",
-        "duration_ms"
+        "duration_ms",
+        "trace_id",
+        "span_id"
       ],
       "title": "RunSummary",
       "type": "object"
@@ -173,9 +197,20 @@
       },
       "title": "Runs",
       "type": "array"
+    },
+    "trace_url": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Trace Url"
     }
   },
-  "required": ["task", "runs"],
+  "required": ["task", "runs", "trace_url"],
   "title": "DetailPageData",
   "type": "object"
 }

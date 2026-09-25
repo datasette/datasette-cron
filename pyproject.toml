@@ -10,10 +10,11 @@ classifiers=[
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "datasette>=1.0a40",
+    "datasette>=1.0a41",
     "datasette-plugin-router>=0.0.1a2",
+    "opentelemetry-api>=1.37",
     "datasette-vite>=0.0.1a4",
-    "pydantic>=2",
+    "pydantic>=2.7",
     "sqlite-migrate>=0.1b0",
     "sqlite-utils>=3.38",
     "croniter",
@@ -27,6 +28,8 @@ dev = [
     # but declare it here rather than lean on a transitive dep -- that is
     # exactly what broke when core moved off httpx.
     "httpx2>=2.0",
+    "opentelemetry-distro>=0.58b0",
+    "opentelemetry-sdk>=1.37",
     "pytest",
     "pytest-asyncio",
     "ruff>=0.15.0",

@@ -184,12 +184,19 @@ class InternalDB:
 
         await self.db.execute_write_fn(write)
 
-    async def record_run_start(self, task_name: str, attempt: int = 1) -> int:
+    async def record_run_start(
+        self,
+        task_name: str,
+        attempt: int = 1,
+        trace_id: str | None = None,
+        span_id: str | None = None,
+    ) -> int:
         def write(conn):
             cursor = conn.execute(
-                """INSERT INTO datasette_cron_runs (task_name, started_at, status, attempt)
-                VALUES (?, strftime('%Y-%m-%dT%H:%M:%f', 'now'), 'running', ?)""",
-                [task_name, attempt],
+                """INSERT INTO datasette_cron_runs
+                    (task_name, started_at, status, attempt, trace_id, span_id)
+                VALUES (?, strftime('%Y-%m-%dT%H:%M:%f', 'now'), 'running', ?, ?, ?)""",
+                [task_name, attempt, trace_id, span_id],
             )
             run_id = cursor.lastrowid
             # Cap run history per task: prune everything but the newest

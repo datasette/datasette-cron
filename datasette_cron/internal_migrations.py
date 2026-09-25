@@ -39,3 +39,14 @@ def m001_initial(db: Database):
         CREATE INDEX IF NOT EXISTS idx_datasette_cron_runs_task_started
             ON datasette_cron_runs(task_name, started_at DESC);
     """)
+
+
+@internal_migrations()
+def m002_run_trace_id(db: Database):
+    # OpenTelemetry ids for the attempt this row records, as 32- and
+    # 16-char lowercase hex - the form tracing UIs accept in a URL. NULL
+    # when no tracing provider is installed.
+    db.executescript("""
+        ALTER TABLE datasette_cron_runs ADD COLUMN trace_id TEXT;
+        ALTER TABLE datasette_cron_runs ADD COLUMN span_id TEXT;
+    """)

@@ -113,6 +113,41 @@ dev *flags:
     --plugins-dir samples \
     {{flags}}
 
+# Like `just dev`, with the sibling datasette-otel-viewer plugin loaded so
+# this plugin's spans and metrics can be browsed in-instance at /-/otel
+# (traces + metrics). Rows land in .tmp/otel.db.
+#
+# The viewer self-records: it installs its own TracerProvider/MeterProvider
+# at import time, so no `opentelemetry-instrument` and no OTEL_* env vars
+# here — a provider installed before the plugin imports wins the race and
+# disables the viewer's self-recording. It stays on a `--with ../` sibling
+# path because it is not on PyPI yet (same reasoning as datasette-paper's
+# Justfile); once published, move it to the `dev` group and drop the flag.
+dev-otel *flags:
+  mkdir -p .tmp
+  DATASETTE_SECRET=abc123 uv run \
+    --no-cache \
+    --with ../datasette-otel-viewer \
+    datasette \
+    -s permissions.datasette-cron-access true \
+    -s permissions.permissions-debug true \
+    -s permissions.datasette-otel-viewer true \
+    -s plugins.datasette-otel-viewer.db_path .tmp/otel.db \
+    -s plugins.datasette-otel-viewer.service_name datasette-cron \
+    --internal .tmp/internal.db \
+    -p 8010 \
+    .tmp/tmp.db \
+    --plugins-dir samples \
+    {{flags}}
+
+# Regenerate the OpenTelemetry reference in README.md from the registry.
+telemetry-doc:
+  uv run scripts/telemetry-doc.py
+
+# CI: fail if README's telemetry reference is stale.
+telemetry-doc-check:
+  uv run scripts/telemetry-doc.py --check
+
 clean-dev:
   rm -rf .tmp/
 

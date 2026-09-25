@@ -368,6 +368,10 @@ export interface components {
       attempt: number;
       /** Duration Ms */
       duration_ms: number | null;
+      /** Trace Id */
+      trace_id: string | null;
+      /** Span Id */
+      span_id: string | null;
     };
   };
   responses: never;
