@@ -7,11 +7,11 @@ from datasette_vite import vite_entry
 from opentelemetry.trace import Status, StatusCode
 from sqlite_utils import Database as SqliteUtilsDatabase
 
+from . import telemetry
 from .hookspecs import cron_register_handlers as cron_register_handlers
 from .internal_migrations import internal_migrations
 from .router import ACCESS_ACTION, router
 from .scheduler import Scheduler
-from . import telemetry
 from .telemetry import tracer
 from .telemetry_registry import ERROR_TYPE, HANDLERS, PLUGIN, REGISTER_HANDLERS
 

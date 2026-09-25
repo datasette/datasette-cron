@@ -29,7 +29,6 @@ from datasette.telemetry_registry import (
     SpanName,
 )
 
-
 # --- Attributes -----------------------------------------------------------
 #
 # Shared attributes are defined once and referenced by every span or metric

@@ -27,15 +27,14 @@ import weakref
 from collections import Counter
 from importlib.metadata import version
 
-from opentelemetry import metrics as otel_metrics
-from opentelemetry import trace as otel_trace
-
 # Core's SCHEMA_URL comment explains why it is 1.29.0 and not the latest:
 # it is a claim about the spellings on the wire. The only semconv names
 # this plugin emits are `error.type` and `code.function`, and
 # `code.function` is the 1.29 spelling (renamed `code.function.name` in
 # 1.30). Importing the URL keeps the two libraries making the same claim.
 from datasette.telemetry import SCHEMA_URL
+from opentelemetry import metrics as otel_metrics
+from opentelemetry import trace as otel_trace
 
 from .telemetry_registry import (
     ENABLED,

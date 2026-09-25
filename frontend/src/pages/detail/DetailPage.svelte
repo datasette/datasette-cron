@@ -324,7 +324,7 @@
                 {#if run.trace_id}
                   {@const href = traceHref(run.trace_id, run.span_id)}
                   {#if href}
-                    <a href={href} title={run.trace_id}>
+                    <a {href} title={run.trace_id}>
                       {run.trace_id.slice(0, 8)}
                     </a>
                   {:else}

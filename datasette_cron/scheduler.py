@@ -13,10 +13,10 @@ from typing import Any
 from datasette.telemetry import linked_root_span_kwargs
 from opentelemetry.trace import Status, StatusCode
 
+from . import telemetry
 from .internal_db import InternalDB
 from .models import CronTask
 from .schedules import add_jitter, parse_schedule, schedule_from_db
-from . import telemetry
 from .telemetry import tracer
 from .telemetry_registry import (
     ATTEMPT,

@@ -5,8 +5,8 @@
 # once-per-process/ProxyTracer reasoning.
 from datasette.telemetry_testing import (  # noqa: F401
     MetricsCollector,
-    otel_metrics,
     otel_meter_provider,
+    otel_metrics,
     otel_provider,
     otel_reset,
     otel_spans,
