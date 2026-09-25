@@ -2,9 +2,9 @@ from dataclasses import asdict
 
 from datasette import Response
 
-from ..router import router, require_permission, get_scheduler
-from ..page_data import IndexPageData, DetailPageData, RunSummary, task_to_summary
 from ..internal_db import InternalDB
+from ..page_data import DetailPageData, IndexPageData, RunSummary, task_to_summary
+from ..router import get_scheduler, require_permission, router
 
 
 @router.GET(r"/-/cron$")

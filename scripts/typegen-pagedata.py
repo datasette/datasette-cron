@@ -3,6 +3,7 @@
 
 import json
 from pathlib import Path
+
 from datasette_cron.page_data import __exports__
 
 for model in __exports__:

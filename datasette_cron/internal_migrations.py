@@ -1,5 +1,5 @@
-from sqlite_utils import Database
 from sqlite_migrate import Migrations
+from sqlite_utils import Database
 
 internal_migrations = Migrations("datasette-cron.internal")
 

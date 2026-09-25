@@ -1,7 +1,8 @@
-from datasette.app import Datasette
 import json
-import pytest
 import re
+
+import pytest
+from datasette.app import Datasette
 
 
 async def _setup_datasette_with_task():

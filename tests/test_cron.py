@@ -1,12 +1,11 @@
 import asyncio
 import json
 
-from datasette.app import Datasette
 import pytest
+from datasette.app import Datasette
 
 from datasette_cron.models import CronTask
-from datasette_cron.schedules import IntervalSchedule, CronSchedule, parse_schedule
-
+from datasette_cron.schedules import CronSchedule, IntervalSchedule, parse_schedule
 
 # ---------------------------------------------------------------------------
 # Helpers

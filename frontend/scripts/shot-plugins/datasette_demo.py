@@ -26,7 +26,6 @@ from datetime import datetime, timedelta, timezone
 
 from datasette import hookimpl
 
-
 # ---------------------------------------------------------------------------
 # Demo handlers. Registered for real (they show up in the "Registered
 # handlers" chip list) but never actually executed during a screenshot run.

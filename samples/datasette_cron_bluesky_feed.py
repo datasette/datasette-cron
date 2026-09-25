@@ -8,10 +8,10 @@ Usage:
     datasette tmp.db --plugins-dir=samples/
 """
 
-from datasette import hookimpl
 from datetime import datetime
-import httpx2
 
+import httpx2
+from datasette import hookimpl
 
 BSKY_API = "https://public.api.bsky.app/xrpc"
 FEED_URI = "at://did:plc:cr26c7oguulx6ipxdy6bf2it/app.bsky.feed.generator/aaageh42iayoa"

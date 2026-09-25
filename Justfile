@@ -54,6 +54,7 @@ shots *names:
 # === Formatting ===
 
 format-backend *flags:
+  uv run ruff check --fix --quiet
   uv run ruff format {{flags}}
 
 format-backend-check *flags:
@@ -77,6 +78,7 @@ format-check:
 
 check-backend:
   uvx ty check
+  uv run ruff check
 
 check-frontend:
   npm run check --prefix frontend

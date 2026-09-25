@@ -7,8 +7,9 @@ Usage:
     datasette tmp.db --plugins-dir=samples/
 """
 
-from datasette import hookimpl
 from datetime import datetime
+
+from datasette import hookimpl
 
 
 async def insert_debug_row(datasette, config):
