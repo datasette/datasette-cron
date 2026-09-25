@@ -8,6 +8,7 @@ from opentelemetry.trace import Status, StatusCode
 from sqlite_utils import Database as SqliteUtilsDatabase
 
 from . import telemetry
+from .config import load_config
 from .hookspecs import cron_register_handlers as cron_register_handlers
 from .internal_migrations import internal_migrations
 from .router import ACCESS_ACTION, router
@@ -63,6 +64,10 @@ def startup(datasette):
     """Set up DB schema and scheduler instance so other plugins can add_task in their startup."""
 
     async def inner():
+        # Validate plugin config first, so a bad config fails startup before
+        # anything touches the internal database.
+        datasette._cron_config = load_config(datasette)
+
         # Apply migrations
         def migrate(connection):
             db = SqliteUtilsDatabase(connection)
@@ -74,19 +79,6 @@ def startup(datasette):
         scheduler = Scheduler(datasette)
         datasette._cron_scheduler = scheduler
         telemetry.register_scheduler(scheduler)
-
-        # Optional trace_url plugin config: a template that turns a run's
-        # stored trace id into a tracing-UI link on the detail page, e.g.
-        # "http://localhost:16686/trace/{trace_id}". Validated once here.
-        config = datasette.plugin_config("datasette-cron") or {}
-        trace_url = config.get("trace_url")
-        if trace_url and "{trace_id}" not in trace_url:
-            logger.warning(
-                "datasette-cron trace_url %r has no {trace_id} placeholder, ignoring",
-                trace_url,
-            )
-            trace_url = None
-        datasette._cron_trace_url = trace_url
 
         # Reconcile runs orphaned by a crashed previous process. Safe here
         # because core only launches supervised background tasks (including

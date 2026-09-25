@@ -3,6 +3,7 @@ import re
 
 import pytest
 from datasette.app import Datasette
+from pydantic import ValidationError
 
 
 async def _setup_datasette_with_task():
@@ -443,24 +444,28 @@ async def test_detail_page_data_carries_trace_url():
 
 
 @pytest.mark.asyncio
-async def test_trace_url_without_placeholder_is_ignored():
+@pytest.mark.parametrize(
+    "plugin_config,field,message",
+    [
+        (
+            {"trace_url": "http://example.com/traces"},
+            "trace_url",
+            "must contain a {trace_id} placeholder",
+        ),
+        (
+            {"trace_ur": "http://localhost:16686/trace/{trace_id}"},
+            "trace_ur",
+            "Extra inputs are not permitted",
+        ),
+    ],
+)
+async def test_invalid_plugin_config_fails_startup(plugin_config, field, message):
     datasette = Datasette(
-        memory=True,
-        config={
-            "permissions": {"datasette-cron-access": True},
-            "plugins": {"datasette-cron": {"trace_url": "http://example.com/traces"}},
-        },
+        memory=True, config={"plugins": {"datasette-cron": plugin_config}}
     )
-    await datasette.invoke_startup()
-    scheduler = datasette._cron_scheduler
-
-    async def handler(datasette, config):
-        pass
-
-    scheduler.register_handlers("test", {"h": handler})
-    await scheduler.add_task(name="t", handler="test:h", schedule={"interval": 3600})
-
-    response = await datasette.client.get("/-/cron/t")
-    assert response.status_code == 200
-    assert _page_data_from(response.text)["trace_url"] is None
-    await scheduler.shutdown()
+    with pytest.raises(ValidationError) as excinfo:
+        await datasette.invoke_startup()
+    text = str(excinfo.value)
+    assert "datasette-cron plugin config" in text
+    assert field in text
+    assert message in text

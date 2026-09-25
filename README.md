@@ -329,6 +329,10 @@ plugins:
 Without `trace_url` the detail page shows a click-to-copy trace id prefix
 instead; with no traced runs at all the column is hidden.
 
+The `datasette-cron` plugin config is validated at startup: an unknown key
+(a typo like `trace_ur`) or a `trace_url` without `{trace_id}` stops
+Datasette from starting, with an error naming the field.
+
 ### Reference
 
 Generated from `datasette_cron/telemetry_registry.py` by

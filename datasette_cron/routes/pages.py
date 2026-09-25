@@ -45,7 +45,7 @@ async def cron_detail(datasette, request, task_name: str):
     page_data = DetailPageData(
         task=task_to_summary(task),
         runs=[RunSummary(**asdict(r)) for r in runs],
-        trace_url=getattr(datasette, "_cron_trace_url", None),
+        trace_url=datasette._cron_config.trace_url,
     )
 
     return Response.html(

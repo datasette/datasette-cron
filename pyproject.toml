@@ -14,7 +14,7 @@ dependencies = [
     "datasette-plugin-router>=0.0.1a2",
     "opentelemetry-api>=1.37",
     "datasette-vite>=0.0.1a4",
-    "pydantic>=2",
+    "pydantic>=2.7",
     "sqlite-migrate>=0.1b0",
     "sqlite-utils>=3.38",
     "croniter",
