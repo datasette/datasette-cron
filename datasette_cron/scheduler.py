@@ -537,9 +537,18 @@ class Scheduler:
                                 attempt_span.set_status(
                                     Status(StatusCode.ERROR, error_message)
                                 )
+                                # Both rows say "cancelled" so the run row
+                                # agrees with the event this run emits, and
+                                # so last_status can actually reach
+                                # "cancelled" -- which the recovery
+                                # transition in _emit_run_finished tests for.
                                 await self.internal_db.record_run_error(
-                                    run_id, "Cancelled", duration_ms
+                                    run_id,
+                                    "Cancelled",
+                                    duration_ms,
+                                    status="cancelled",
                                 )
+                                await self.internal_db.mark_last_run(name, "cancelled")
                                 raise
                             except Exception as e:
                                 elapsed = time.monotonic() - start_time

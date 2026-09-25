@@ -24,6 +24,23 @@ async def _make_scheduler(**ds_kwargs):
     return ds, scheduler
 
 
+async def _cancel_in_flight(scheduler, name):
+    """Cancel every in-flight execution of `name` and wait for it to finish.
+
+    The same two steps `shutdown()` and `remove_task()` take, without their
+    other side effects -- so a test can cancel one run and then keep using
+    both the scheduler and the task row.
+    """
+    in_flight = [t for t in scheduler._running_tasks.get(name, ()) if not t.done()]
+    for t in in_flight:
+        t.cancel()
+    for t in in_flight:
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):
+            pass
+
+
 # ---------------------------------------------------------------------------
 # 1. add_task() creates task in DB
 # ---------------------------------------------------------------------------
@@ -1208,6 +1225,44 @@ async def test_shutdown_cancels_trigger_spawned_runs():
 
     await scheduler.shutdown()
     assert cancelled.is_set(), "Trigger-spawned task must be cancelled on shutdown"
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_is_recorded_as_cancelled():
+    """A cancelled run must not be filed as an error.
+
+    Both the run row and the task row say "cancelled", which is also what
+    the RunFinishedEvent for that run reports.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    in_handler = asyncio.Event()
+
+    async def long_handler(datasette, config):
+        in_handler.set()
+        await asyncio.sleep(60)
+
+    scheduler.register_handlers("test", {"long": long_handler})
+    await scheduler.add_task(
+        name="cancel-status-task",
+        handler="test:long",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("cancel-status-task")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+
+    # shutdown() awaits each cancelled execution, so its bookkeeping has
+    # landed by the time this returns.
+    await scheduler.shutdown()
+
+    task = await scheduler.internal_db.get_task("cancel-status-task")
+    assert task.last_status == "cancelled"
+
+    runs = await scheduler.internal_db.get_runs("cancel-status-task")
+    assert [run.status for run in runs] == ["cancelled"]
+    assert runs[0].error_message == "Cancelled"
+    assert runs[0].finished_at is not None
 
 
 @pytest.mark.asyncio

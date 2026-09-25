@@ -6,7 +6,7 @@ from datasette.plugins import pm
 
 from datasette_cron.events import RunFinishedEvent
 
-from .test_cron import _make_scheduler
+from .test_cron import _cancel_in_flight, _make_scheduler
 
 
 @pytest.fixture
@@ -165,6 +165,56 @@ async def test_cancel_emits_cancelled_event(capture):
     run_events = [e for e in capture if isinstance(e, RunFinishedEvent)]
     assert len(run_events) == 1
     assert run_events[0].status == "cancelled"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_success_after_cancel_emits_recovery_event(capture):
+    """cancel -> success is a recovery, same as error -> success.
+
+    Only reachable because a cancelled run now writes last_status =
+    "cancelled"; while the cancel branch recorded an error the
+    `previous == "cancelled"` arm of the transition rule was dead code.
+    """
+    ds, scheduler = await _make_scheduler()
+
+    blocking = True
+    entered = asyncio.Event()
+
+    async def sometimes_blocking_handler(datasette, config):
+        if blocking:
+            entered.set()
+            await asyncio.sleep(60)
+
+    scheduler.register_handlers("test", {"maybe-block": sometimes_blocking_handler})
+    await scheduler.add_task(
+        name="recover-after-cancel",
+        handler="test:maybe-block",
+        schedule={"interval": 99999},
+    )
+
+    # 1. Cancelled mid-handler -- emits status=="cancelled".
+    await scheduler.trigger_task("recover-after-cancel")
+    await asyncio.wait_for(entered.wait(), timeout=2.0)
+    await _cancel_in_flight(scheduler, "recover-after-cancel")
+
+    run_events = await _wait_for_run_events(capture, 1)
+    assert run_events[0].status == "cancelled"
+
+    task = await scheduler.internal_db.get_task("recover-after-cancel")
+    assert task.last_status == "cancelled"
+
+    # 2. Recovers -- emits status=="success" (transition out of cancelled).
+    blocking = False
+    await scheduler.trigger_task("recover-after-cancel")
+    run_events = await _wait_for_run_events(capture, 2)
+    assert run_events[1].status == "success"
+
+    # 3. Routine success -- emits nothing more.
+    await scheduler.trigger_task("recover-after-cancel")
+    await asyncio.sleep(0.5)
+    assert len([e for e in capture if isinstance(e, RunFinishedEvent)]) == 2
 
     await scheduler.shutdown()
 
