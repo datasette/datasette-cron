@@ -74,3 +74,11 @@ exclude = ["tests/", "samples/", "frontend/"]
 # locally and fails in CI.
 [tool.ruff.format]
 exclude = ["*.md"]
+
+# Lint: pyflakes + the pycodestyle errors the formatter doesn't own, plus
+# import sorting, bugbear and pyupgrade. An explicit `select` rather than
+# `extend-select`, because ruff 0.16 widened its default rule set (DTZ, RUF,
+# C4, BLE, ...) and, as with the Markdown exclude above, a floor-only ruff
+# pin means CI and local checkouts can otherwise disagree on what "clean" is.
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP"]

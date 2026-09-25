@@ -6,8 +6,8 @@ import tempfile
 
 import pytest
 import pytest_asyncio
-from datasette.app import Datasette
 from datasette import hookimpl
+from datasette.app import Datasette
 from datasette.plugins import pm
 
 

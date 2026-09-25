@@ -1,14 +1,14 @@
+import logging
+
 from datasette import hookimpl
 from datasette.permissions import Action
 from datasette.plugins import pm
 from datasette_vite import vite_entry
 from sqlite_utils import Database as SqliteUtilsDatabase
 
-import logging
-
 from .hookspecs import cron_register_handlers as cron_register_handlers
 from .internal_migrations import internal_migrations
-from .router import router, ACCESS_ACTION
+from .router import ACCESS_ACTION, router
 from .scheduler import Scheduler
 
 logger = logging.getLogger("datasette_cron")
@@ -17,7 +17,7 @@ logger = logging.getLogger("datasette_cron")
 pm.add_hookspecs(__import__(__name__ + ".hookspecs", fromlist=["hookspecs"]))
 
 # Import route modules to trigger registration on the shared router
-from .routes import pages, api  # noqa: E402
+from .routes import api, pages  # noqa: E402
 
 _ = (pages, api)
 

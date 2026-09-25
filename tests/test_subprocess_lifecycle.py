@@ -263,7 +263,7 @@ def test_sigterm_finalizes_in_flight_run(tmp_path):
             raise AssertionError(
                 "datasette serve did not exit within 10s of SIGTERM\n"
                 + ds_proc.stdout.read().decode("utf-8")
-            )
+            ) from None
 
         row = _latest_run_status(internal_db_path)
         assert row is not None, "no run row found for slow-task after exit"

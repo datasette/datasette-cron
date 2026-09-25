@@ -8,7 +8,6 @@ import pytest
 import pytest_asyncio
 from datasette.app import Datasette
 
-
 SAMPLE_PLUGIN_PATH = os.path.join(
     os.path.dirname(os.path.dirname(__file__)), "samples", "datasette_cron_debug.py"
 )

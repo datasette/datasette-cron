@@ -11,9 +11,9 @@ from datasette_cron.schedules import (
     CronSchedule,
     IntervalSchedule,
     RRuleSchedule,
+    add_jitter,
     parse_schedule,
     schedule_from_db,
-    add_jitter,
 )
 
 
@@ -49,7 +49,7 @@ class TestCronSchedule:
         assert sched.to_dict() == {"expression": "*/5 * * * *"}
 
     def test_invalid_expression(self):
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             CronSchedule("not a cron")
 
 
