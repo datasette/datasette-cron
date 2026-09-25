@@ -175,10 +175,7 @@
       "type": "array"
     }
   },
-  "required": [
-    "task",
-    "runs"
-  ],
+  "required": ["task", "runs"],
   "title": "DetailPageData",
   "type": "object"
 }
