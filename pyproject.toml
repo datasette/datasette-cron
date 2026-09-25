@@ -18,7 +18,6 @@ dependencies = [
     "sqlite-migrate>=0.1b0",
     "sqlite-utils>=3.38",
     "croniter",
-    "python-dateutil",
 ]
 
 [dependency-groups]
