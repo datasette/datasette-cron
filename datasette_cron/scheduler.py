@@ -77,6 +77,26 @@ class TickStats:
     disabled: int = 0
 
 
+@dataclass
+class RunOutcome:
+    """What one execution of a task ended up doing.
+
+    `_run_attempt` fills it in; the run span's finalizer and
+    `_emit_run_finished` read it. The defaults are the "never got as far as
+    an attempt" answer. `actor_id` rides along because it was handed to this
+    one execution, so it can only ever describe this run.
+    """
+
+    status: str = "error"
+    attempts: int = 0
+    error_type: str | None = None
+    error_message: str | None = None
+    run_id: int | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+    actor_id: str | None = None
+
+
 class Scheduler:
     def __init__(self, datasette):
         self.datasette = datasette
@@ -152,7 +172,7 @@ class Scheduler:
         *,
         force: bool = False,
         scheduled_at: str | None = None,
-        now: datetime | None = None,
+        lag: float | None = None,
         actor_id: str | None = None,
     ) -> str:
         """Spawn _execute_task, respecting overlap_policy unless force=True.
@@ -189,7 +209,7 @@ class Scheduler:
                 trigger="manual" if force else "scheduled",
                 run_span_kwargs=run_span_kwargs,
                 scheduled_at=scheduled_at,
-                now=now,
+                lag=lag,
                 actor_id=actor_id,
             )
         )
@@ -340,12 +360,14 @@ class Scheduler:
             try:
                 handler_fn = self.get_handler(task.handler)
 
-                # Lag is recorded for every due task, spawned or not, so an
-                # overlap-starved task still shows its slot drifting.
+                # Lag is measured once here and handed to the execution for
+                # its span attribute. It is recorded as a metric for every
+                # due task, spawned or not, so an overlap-starved task still
+                # shows its slot drifting.
+                lag: float | None = None
                 if task.next_run_at:
-                    telemetry.run_lag.record(
-                        _lag_seconds(task.next_run_at, now), {TASK: name}
-                    )
+                    lag = _lag_seconds(task.next_run_at, now)
+                    telemetry.run_lag.record(lag, {TASK: name})
 
                 if not handler_fn:
                     logger.error(
@@ -383,7 +405,7 @@ class Scheduler:
                 next_run = sched.next_run(now)
 
                 outcome = self._spawn_execution(
-                    task, handler_fn, scheduled_at=task.next_run_at, now=now
+                    task, handler_fn, scheduled_at=task.next_run_at, lag=lag
                 )
                 if outcome == "skipped":
                     stats.skipped += 1
@@ -423,44 +445,20 @@ class Scheduler:
         task: CronTask,
         handler_fn: Callable[..., Any],
         *,
+        run_span_kwargs: dict,
         trigger: str = "scheduled",
-        run_span_kwargs: dict | None = None,
         scheduled_at: str | None = None,
-        now: datetime | None = None,
+        lag: float | None = None,
         actor_id: str | None = None,
     ) -> None:
-        name = task.name
-        config = task.config
+        """Run `task` to completion, retries included, under one run span."""
         max_attempts = task.retry_max + 1
-        backoff_strategy = task.retry_backoff
-        plugin, _, _ = task.handler.partition(":")
-        if run_span_kwargs is None:
-            # create_task copied the context, so the causing span is still
-            # current here too; the helper discards it and keeps the link.
-            run_span_kwargs = linked_root_span_kwargs()
-
-        def record_attempt_metrics(outcome: str, attempt: int, elapsed: float) -> None:
-            # Called while the attempt span is current, so the SDK can
-            # attach an exemplar linking the histogram bucket to the trace.
-            telemetry.run_duration.record(
-                elapsed,
-                {TASK: name, HANDLER: task.handler, STATUS: outcome, TRIGGER: trigger},
-            )
-            telemetry.attempts.add(
-                1,
-                {
-                    TASK: name,
-                    HANDLER: task.handler,
-                    STATUS: outcome,
-                    RETRY: attempt > 1,
-                },
-            )
-
+        outcome = RunOutcome(actor_id=actor_id)
         try:
             with tracer.start_as_current_span(RUN, **run_span_kwargs) as run_span:
-                run_span.set_attribute(TASK, name)
+                run_span.set_attribute(TASK, task.name)
                 run_span.set_attribute(HANDLER, task.handler)
-                run_span.set_attribute(PLUGIN, plugin)
+                run_span.set_attribute(PLUGIN, task.handler.partition(":")[0])
                 run_span.set_attribute(
                     CODE_FUNCTION,
                     "{}.{}".format(
@@ -472,159 +470,155 @@ class Scheduler:
                 run_span.set_attribute(MAX_ATTEMPTS, max_attempts)
                 if scheduled_at is not None:
                     run_span.set_attribute(SCHEDULED_AT, scheduled_at)
-                    run_span.set_attribute(
-                        LAG, _lag_seconds(scheduled_at, now or _utcnow())
-                    )
-                status = "error"
-                error_type: str | None = None
-                error_message: str | None = None
-                attempts_made = 0
-                # Hoisted so the outer `finally` (and _emit_run_finished) can
-                # read the last attempt's values regardless of how the loop
-                # ended; also read as record_run_error/success's own args.
-                run_id: int | None = None
-                trace_id: str | None = None
-                span_id: str | None = None
+                if lag is not None:
+                    run_span.set_attribute(LAG, lag)
                 try:
                     for attempt in range(1, max_attempts + 1):
-                        attempts_made = attempt
-                        with tracer.start_as_current_span(ATTEMPT_SPAN) as attempt_span:
-                            attempt_span.set_attribute(ATTEMPT, attempt)
-                            # With no tracing provider the context is not
-                            # valid and both ids stay NULL on the row.
-                            ctx = attempt_span.get_span_context()
-                            trace_id = (
-                                format(ctx.trace_id, "032x") if ctx.is_valid else None
-                            )
-                            span_id = (
-                                format(ctx.span_id, "016x") if ctx.is_valid else None
-                            )
-                            run_id = await self.internal_db.record_run_start(
-                                name,
-                                attempt,
-                                trace_id=trace_id,
-                                span_id=span_id,
-                            )
-                            attempt_span.set_attribute(RUN_ID, run_id)
-                            start_time = time.monotonic()
-                            try:
-                                result = handler_fn(self.datasette, config)
-                                is_async = asyncio.iscoroutine(result)
-                                attempt_span.set_attribute(HANDLER_ASYNC, is_async)
-                                if is_async:
-                                    await result
-                                elapsed = time.monotonic() - start_time
-                                duration_ms = int(elapsed * 1000)
-                                record_attempt_metrics("success", attempt, elapsed)
-                                await self.internal_db.record_run_success(
-                                    run_id, duration_ms
-                                )
-                                await self.internal_db.mark_last_run(name, "success")
-                                status = "success"
-                                return
-                            except asyncio.CancelledError:
-                                elapsed = time.monotonic() - start_time
-                                duration_ms = int(elapsed * 1000)
-                                record_attempt_metrics("cancelled", attempt, elapsed)
-                                status = "cancelled"
-                                error_type = "CancelledError"
-                                error_message = "Cancelled"
-                                attempt_span.set_attribute(ERROR_TYPE, error_type)
-                                # use_span() only handles Exception, and
-                                # CancelledError is a BaseException - the
-                                # operator reading a trace still wants to see
-                                # that the handler did not finish.
-                                attempt_span.set_status(
-                                    Status(StatusCode.ERROR, error_message)
-                                )
-                                # Both rows say "cancelled" so the run row
-                                # agrees with the event this run emits, and
-                                # so last_status can actually reach
-                                # "cancelled" -- which the recovery
-                                # transition in _emit_run_finished tests for.
-                                await self.internal_db.record_run_error(
-                                    run_id,
-                                    "Cancelled",
-                                    duration_ms,
-                                    status="cancelled",
-                                )
-                                await self.internal_db.mark_last_run(name, "cancelled")
-                                raise
-                            except Exception as e:
-                                elapsed = time.monotonic() - start_time
-                                duration_ms = int(elapsed * 1000)
-                                record_attempt_metrics("error", attempt, elapsed)
-                                error_type = type(e).__name__
-                                error_message = str(e)
-                                attempt_span.set_attribute(ERROR_TYPE, error_type)
-                                attempt_span.record_exception(e)
-                                attempt_span.set_status(
-                                    Status(StatusCode.ERROR, error_message)
-                                )
-                                await self.internal_db.record_run_error(
-                                    run_id, str(e), duration_ms
-                                )
-                                logger.warning(
-                                    "Task %r attempt %d/%d failed: %s",
-                                    name,
-                                    attempt,
-                                    max_attempts,
-                                    e,
-                                )
+                        outcome.attempts = attempt
+                        if await self._run_attempt(
+                            task, handler_fn, attempt, trigger, outcome
+                        ):
+                            break
                         # The retry sleep lives outside the attempt span so
                         # the backoff span is a sibling of the attempts, not
                         # nested inside a failed one.
-                        if attempt < max_attempts:
-                            delay = self._backoff_delay(backoff_strategy, attempt)
-                            with tracer.start_as_current_span(BACKOFF) as backoff_span:
-                                backoff_span.set_attribute(BACKOFF_DELAY, delay)
-                                await asyncio.sleep(delay)
-                        else:
-                            logger.error(
-                                "Task %r failed after %d attempts", name, max_attempts
-                            )
-                            await self.internal_db.mark_last_run(name, "error")
+                        delay = self._backoff_delay(task.retry_backoff, attempt)
+                        with tracer.start_as_current_span(BACKOFF) as backoff_span:
+                            backoff_span.set_attribute(BACKOFF_DELAY, delay)
+                            await asyncio.sleep(delay)
                 finally:
-                    run_span.set_attribute(ATTEMPTS, attempts_made)
-                    run_span.set_attribute(STATUS, status)
+                    # Still a `finally`: the span is finalized and the event
+                    # emitted however the loop ended -- cancel included, whose
+                    # CancelledError then resumes propagating.
+                    run_span.set_attribute(ATTEMPTS, outcome.attempts)
+                    run_span.set_attribute(STATUS, outcome.status)
                     # A failed attempt that was then retried successfully
                     # leaves the run span clean; the failure is on the
                     # attempt span.
-                    if status != "success":
-                        if error_type is not None:
-                            run_span.set_attribute(ERROR_TYPE, error_type)
-                        run_span.set_status(Status(StatusCode.ERROR, error_message))
-                    await self._emit_run_finished(
-                        task,
-                        status,
-                        attempts_made,
-                        error_message,
-                        run_id,
-                        trace_id,
-                        span_id,
-                        trigger,
-                        actor_id,
-                    )
+                    if outcome.status != "success":
+                        if outcome.error_type is not None:
+                            run_span.set_attribute(ERROR_TYPE, outcome.error_type)
+                        run_span.set_status(
+                            Status(StatusCode.ERROR, outcome.error_message)
+                        )
+                    await self._emit_run_finished(task, outcome, trigger)
         finally:
             # Remove ourselves from the in-flight set; clean up empty entries.
             current = asyncio.current_task()
-            running = self._running_tasks.get(name)
+            running = self._running_tasks.get(task.name)
             if running is not None and current is not None:
                 running.discard(current)
                 if not running:
-                    self._running_tasks.pop(name, None)
+                    self._running_tasks.pop(task.name, None)
 
-    async def _emit_run_finished(
+    async def _run_attempt(
         self,
         task: CronTask,
-        status: str,
+        handler_fn: Callable[..., Any],
         attempt: int,
-        error_message: str | None,
-        run_id: int | None,
-        trace_id: str | None,
-        span_id: str | None,
         trigger: str,
-        actor_id: str | None,
+        outcome: RunOutcome,
+    ) -> bool:
+        """Run one attempt of `task` under its own attempt span.
+
+        Fills in `outcome`; returns True when the retry loop should stop --
+        success, cancellation (which also re-raises), or attempts exhausted.
+        """
+        name = task.name
+        max_attempts = task.retry_max + 1
+        with tracer.start_as_current_span(ATTEMPT_SPAN) as span:
+            span.set_attribute(ATTEMPT, attempt)
+            # With no tracing provider the context is not valid and both ids
+            # stay NULL on the row.
+            ctx = span.get_span_context()
+            outcome.trace_id = format(ctx.trace_id, "032x") if ctx.is_valid else None
+            outcome.span_id = format(ctx.span_id, "016x") if ctx.is_valid else None
+            run_id = await self.internal_db.record_run_start(
+                name, attempt, trace_id=outcome.trace_id, span_id=outcome.span_id
+            )
+            outcome.run_id = run_id
+            span.set_attribute(RUN_ID, run_id)
+
+            cancelled: asyncio.CancelledError | None = None
+            failure: Exception | None = None
+            started = time.monotonic()
+            try:
+                result = handler_fn(self.datasette, task.config)
+                is_async = asyncio.iscoroutine(result)
+                span.set_attribute(HANDLER_ASYNC, is_async)
+                if is_async:
+                    await result
+            except asyncio.CancelledError as e:
+                cancelled = e
+            except Exception as e:
+                failure = e
+            # One tail for every way the attempt can end: timed once here.
+            elapsed = time.monotonic() - started
+            duration_ms = int(elapsed * 1000)
+
+            if cancelled is not None:
+                status, error_type, message = "cancelled", "CancelledError", "Cancelled"
+            elif failure is not None:
+                status = "error"
+                error_type, message = type(failure).__name__, str(failure)
+            else:
+                status, error_type, message = "success", None, None
+            outcome.status = status
+
+            # Recorded while the attempt span is current, so the SDK can
+            # attach an exemplar linking the histogram bucket to the trace.
+            labels = {TASK: name, HANDLER: task.handler, STATUS: status}
+            telemetry.run_duration.record(elapsed, {**labels, TRIGGER: trigger})
+            telemetry.attempts.add(1, {**labels, RETRY: attempt > 1})
+
+            if error_type is not None:
+                # Written only by a failed attempt, so a run retried into
+                # success still reports what it recovered from.
+                outcome.error_type, outcome.error_message = error_type, message
+                span.set_attribute(ERROR_TYPE, error_type)
+                if failure is not None:
+                    span.record_exception(failure)
+                # use_span() only handles Exception, and CancelledError is a
+                # BaseException - the operator reading a trace still wants to
+                # see that the handler did not finish.
+                span.set_status(Status(StatusCode.ERROR, message))
+
+            # Only a failure with retries left leaves the task row unsettled.
+            final = cancelled is not None or failure is None or attempt >= max_attempts
+            # Persisting sits outside the handler's `try` on purpose: a failed
+            # write must leave the run under-recorded, never re-execute work.
+            try:
+                if failure is None and cancelled is None:
+                    await self.internal_db.record_run_success(run_id, duration_ms)
+                else:
+                    # record_run_error's `status` is why the cancel path needs
+                    # no writer of its own.
+                    await self.internal_db.record_run_error(
+                        run_id, message or "", duration_ms, status=status
+                    )
+                # The task row settles with the status the run row just got,
+                # so last_status can reach "cancelled" too.
+                if final:
+                    await self.internal_db.mark_last_run(name, status)
+            except Exception:
+                logger.exception("Could not record run %s of task %r", run_id, name)
+
+            if failure is not None:
+                logger.warning(
+                    "Task %r attempt %d/%d failed: %s",
+                    name,
+                    attempt,
+                    max_attempts,
+                    failure,
+                )
+                if final:
+                    logger.error("Task %r failed after %d attempts", name, max_attempts)
+            if cancelled is not None:
+                raise cancelled
+            return final
+
+    async def _emit_run_finished(
+        self, task: CronTask, outcome: RunOutcome, trigger: str
     ) -> None:
         """Fire `RunFinishedEvent` on error/cancel/recovery, never on a
         routine success.
@@ -635,26 +629,24 @@ class Scheduler:
         `task.last_status` is the status *before* this run, exactly the
         "previous status" the transition rule needs.
 
-        `actor_id` was handed to the execution that is finishing, so it can
-        only ever describe this run: scheduled runs pass None, and two
-        overlapping manual runs each keep their own.
+        Scheduled runs carry no `actor_id`; two overlapping manual runs each
+        keep their own (see `RunOutcome`).
         """
         previous = task.last_status
-        if status == "success" and previous not in ("error", "cancelled"):
+        if outcome.status == "success" and previous not in ("error", "cancelled"):
             return
 
-        actor = {"id": actor_id} if trigger == "manual" and actor_id else None
-
+        actor_id = outcome.actor_id if trigger == "manual" else None
         event = RunFinishedEvent(
-            actor=actor,
+            actor={"id": actor_id} if actor_id else None,
             task_name=task.name,
             handler=task.handler,
-            status=status,
-            attempt=attempt,
-            error_message=error_message,
-            run_id=run_id,
-            trace_id=trace_id,
-            span_id=span_id,
+            status=outcome.status,
+            attempt=outcome.attempts,
+            error_message=outcome.error_message,
+            run_id=outcome.run_id,
+            trace_id=outcome.trace_id,
+            span_id=outcome.span_id,
         )
         try:
             await self.datasette.track_event(event)
@@ -664,7 +656,7 @@ class Scheduler:
             logger.exception(
                 "track_event consumer raised for RunFinishedEvent(task=%r, status=%r)",
                 task.name,
-                status,
+                outcome.status,
             )
 
     async def _compute_sleep(self) -> float:
