@@ -123,20 +123,11 @@ dev *flags:
 # disables the viewer's self-recording. It stays on a `--with ../` sibling
 # path because it is not on PyPI yet (same reasoning as datasette-paper's
 # Justfile); once published, move it to the `dev` group and drop the flag.
-#
-# `--no-sources` + the second `--with` pin datasette to the same rev this
-# branch's [tool.uv.sources] points at (whose add_background_task the
-# scheduler needs, and whose telemetry kit this branch is built on).
-# Without them the viewer's own [tool.uv.sources] datasette pin (an older
-# GitHub rev) conflicts with ours and resolution fails. Keep this rev in
-# sync with the one in pyproject.toml.
 dev-otel *flags:
   mkdir -p .tmp
   DATASETTE_SECRET=abc123 uv run \
-    --no-sources \
     --no-cache \
     --with ../datasette-otel-viewer \
-    --with 'datasette @ git+https://github.com/simonw/datasette@4579a19520b502e90662a79ebd84555a87542340' \
     datasette \
     -s permissions.datasette-cron-access true \
     -s permissions.permissions-debug true \
