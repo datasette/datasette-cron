@@ -49,6 +49,13 @@ def register_actions(datasette):
 
 
 @hookimpl
+def register_events():
+    from .events import RunFinishedEvent
+
+    return [RunFinishedEvent]
+
+
+@hookimpl
 def menu_links(datasette, actor, request):
     async def inner():
         if await datasette.allowed(action=ACCESS_ACTION, actor=actor):

@@ -1,0 +1,219 @@
+import asyncio
+
+import pytest
+from datasette import hookimpl as _hookimpl
+from datasette.plugins import pm
+
+from datasette_cron.events import RunFinishedEvent
+
+from .test_cron import _make_scheduler
+
+
+@pytest.fixture
+def capture():
+    """Registers a `track_event` hookimpl that appends every tracked event
+    to the yielded list, unregistering it again on teardown."""
+    events = []
+
+    class CapturingPlugin:
+        __name__ = "datasette_test_events_capture"
+
+        @staticmethod
+        @_hookimpl
+        def track_event(datasette, event):
+            events.append(event)
+
+    pm.register(CapturingPlugin, name="test_events_capture")
+    try:
+        yield events
+    finally:
+        pm.unregister(name="test_events_capture")
+
+
+@pytest.mark.asyncio
+async def test_failing_handler_emits_one_error_event(capture):
+    ds, scheduler = await _make_scheduler()
+
+    async def failing_handler(datasette, config):
+        raise RuntimeError("boom")
+
+    scheduler.register_handlers("test", {"fail-handler": failing_handler})
+    await scheduler.add_task(
+        name="fail-record-task",
+        handler="test:fail-handler",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("fail-record-task")
+    await asyncio.sleep(0.5)
+
+    run_events = [e for e in capture if isinstance(e, RunFinishedEvent)]
+    assert len(run_events) == 1
+    event = run_events[0]
+    assert event.status == "error"
+    assert event.alert_target() == ("cron-task", "test", "fail-record-task")
+    assert event.dedupe_key == "fail-record-task:error"
+
+    runs = await scheduler.internal_db.get_runs("fail-record-task")
+    assert event.run_id == runs[0].id
+    assert event.trace_id == runs[0].trace_id
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_succeeding_handler_on_fresh_task_emits_nothing(capture):
+    ds, scheduler = await _make_scheduler()
+
+    async def ok_handler(datasette, config):
+        pass
+
+    scheduler.register_handlers("test", {"ok-handler": ok_handler})
+    await scheduler.add_task(
+        name="ok-task",
+        handler="test:ok-handler",
+        schedule={"interval": 99999},
+    )
+
+    # last_status is None on a never-run task.
+    await scheduler.trigger_task("ok-task")
+    await asyncio.sleep(0.5)
+
+    assert capture == []
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fail_then_succeed_then_succeed(capture):
+    ds, scheduler = await _make_scheduler()
+
+    should_fail = True
+
+    async def flaky_handler(datasette, config):
+        if should_fail:
+            raise RuntimeError("boom")
+
+    scheduler.register_handlers("test", {"flaky": flaky_handler})
+    await scheduler.add_task(
+        name="flaky-task",
+        handler="test:flaky",
+        schedule={"interval": 99999},
+    )
+
+    # 1. Fails -- emits status=="error".
+    await scheduler.trigger_task("flaky-task")
+    await asyncio.sleep(0.5)
+    assert len(capture) == 1
+    assert capture[0].status == "error"
+
+    # 2. Recovers -- emits status=="success" (transition out of error).
+    should_fail = False
+    await scheduler.trigger_task("flaky-task")
+    await asyncio.sleep(0.5)
+    assert len(capture) == 2
+    assert capture[1].status == "success"
+
+    # 3. Routine success -- emits nothing more.
+    await scheduler.trigger_task("flaky-task")
+    await asyncio.sleep(0.5)
+    assert len(capture) == 2
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancel_emits_cancelled_event(capture):
+    ds, scheduler = await _make_scheduler()
+
+    in_handler = asyncio.Event()
+
+    async def long_handler(datasette, config):
+        in_handler.set()
+        await asyncio.sleep(60)
+
+    scheduler.register_handlers("test", {"long": long_handler})
+    await scheduler.add_task(
+        name="cancel-task",
+        handler="test:long",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("cancel-task")
+    await asyncio.wait_for(in_handler.wait(), timeout=2.0)
+
+    # remove_task cancels any in-flight execution for the task.
+    await scheduler.remove_task("cancel-task")
+    await asyncio.sleep(0.5)
+
+    run_events = [e for e in capture if isinstance(e, RunFinishedEvent)]
+    assert len(run_events) == 1
+    assert run_events[0].status == "cancelled"
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_manual_trigger_records_actor(capture):
+    ds, scheduler = await _make_scheduler()
+
+    async def failing_handler(datasette, config):
+        raise RuntimeError("boom")
+
+    scheduler.register_handlers("test", {"fail-handler": failing_handler})
+    await scheduler.add_task(
+        name="actor-task",
+        handler="test:fail-handler",
+        schedule={"interval": 99999},
+    )
+
+    await scheduler.trigger_task("actor-task", actor_id="alex")
+    await asyncio.sleep(0.5)
+
+    run_events = [e for e in capture if isinstance(e, RunFinishedEvent)]
+    assert len(run_events) == 1
+    assert run_events[0].actor == {"id": "alex"}
+    assert run_events[0].concerns == ["alex"]
+
+    await scheduler.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_raising_consumer_does_not_change_run_status(capture):
+    ds, scheduler = await _make_scheduler()
+
+    class RaisingPlugin:
+        __name__ = "datasette_test_raising_consumer"
+
+        @staticmethod
+        @_hookimpl
+        def track_event(datasette, event):
+            if isinstance(event, RunFinishedEvent):
+                raise RuntimeError("consumer bug")
+
+    pm.register(RaisingPlugin, name="test_raising_consumer")
+    try:
+
+        async def failing_handler(datasette, config):
+            raise RuntimeError("boom")
+
+        scheduler.register_handlers("test", {"fail-handler": failing_handler})
+        await scheduler.add_task(
+            name="raising-consumer-task",
+            handler="test:fail-handler",
+            schedule={"interval": 99999},
+        )
+
+        await scheduler.trigger_task("raising-consumer-task")
+        await asyncio.sleep(0.5)
+
+        runs = await scheduler.internal_db.get_runs("raising-consumer-task")
+        assert runs[0].status == "error"
+        assert "boom" in runs[0].error_message
+
+        task = await scheduler.internal_db.get_task("raising-consumer-task")
+        assert task.last_status == "error"
+
+        await scheduler.shutdown()
+    finally:
+        pm.unregister(name="test_raising_consumer")

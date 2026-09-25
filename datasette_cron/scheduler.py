@@ -14,6 +14,7 @@ from datasette.telemetry import linked_root_span_kwargs
 from opentelemetry.trace import Status, StatusCode
 
 from . import telemetry
+from .events import RunFinishedEvent
 from .internal_db import InternalDB
 from .models import CronTask
 from .schedules import add_jitter, parse_schedule, schedule_from_db
@@ -93,6 +94,10 @@ class Scheduler:
         # fetched.
         self._last_tick_finished: float | None = None
         self._task_snapshot: list[CronTask] = []
+        # Task name -> actor id of the person who last pressed "Run now",
+        # consumed (popped) the moment the resulting run finishes so it
+        # can't leak onto some later, unrelated run of the same task.
+        self._last_trigger_actor: dict[str, str] = {}
 
     @property
     def internal_db(self) -> InternalDB:
@@ -275,13 +280,17 @@ class Scheduler:
             t.cancel()
         self._wake()
 
-    async def trigger_task(self, name: str) -> None:
+    async def trigger_task(self, name: str, actor_id: str | None = None) -> None:
         """Run a task immediately, out of schedule.
 
         Manual triggers force-run regardless of overlap_policy — the user
         explicitly asked for this run, so we honor that even if a scheduled
         execution is in flight. The concurrent run is tracked and visible
         in the runs table with status='running'.
+
+        `actor_id`, when given, names who pressed "Run now"; it is stashed
+        in-memory (no migration) and attached to the `RunFinishedEvent` this
+        run produces, if any.
         """
         task = await self.internal_db.get_task(name)
         if not task:
@@ -289,6 +298,8 @@ class Scheduler:
         handler_fn = self.get_handler(task.handler)
         if not handler_fn:
             raise ValueError(f"Handler not found: {task.handler}")
+        if actor_id:
+            self._last_trigger_actor[name] = actor_id
         self._spawn_execution(task, handler_fn, force=True)
 
     async def set_enabled(self, name: str, enabled: bool) -> None:
@@ -483,6 +494,12 @@ class Scheduler:
                 error_type: str | None = None
                 error_message: str | None = None
                 attempts_made = 0
+                # Hoisted so the outer `finally` (and _emit_run_finished) can
+                # read the last attempt's values regardless of how the loop
+                # ended; also read as record_run_error/success's own args.
+                run_id: int | None = None
+                trace_id: str | None = None
+                span_id: str | None = None
                 try:
                     for attempt in range(1, max_attempts + 1):
                         attempts_made = attempt
@@ -491,19 +508,17 @@ class Scheduler:
                             # With no tracing provider the context is not
                             # valid and both ids stay NULL on the row.
                             ctx = attempt_span.get_span_context()
+                            trace_id = (
+                                format(ctx.trace_id, "032x") if ctx.is_valid else None
+                            )
+                            span_id = (
+                                format(ctx.span_id, "016x") if ctx.is_valid else None
+                            )
                             run_id = await self.internal_db.record_run_start(
                                 name,
                                 attempt,
-                                trace_id=(
-                                    format(ctx.trace_id, "032x")
-                                    if ctx.is_valid
-                                    else None
-                                ),
-                                span_id=(
-                                    format(ctx.span_id, "016x")
-                                    if ctx.is_valid
-                                    else None
-                                ),
+                                trace_id=trace_id,
+                                span_id=span_id,
                             )
                             attempt_span.set_attribute(RUN_ID, run_id)
                             start_time = time.monotonic()
@@ -585,6 +600,16 @@ class Scheduler:
                         if error_type is not None:
                             run_span.set_attribute(ERROR_TYPE, error_type)
                         run_span.set_status(Status(StatusCode.ERROR, error_message))
+                    await self._emit_run_finished(
+                        task,
+                        status,
+                        attempts_made,
+                        error_message,
+                        run_id,
+                        trace_id,
+                        span_id,
+                        trigger,
+                    )
         finally:
             # Remove ourselves from the in-flight set; clean up empty entries.
             current = asyncio.current_task()
@@ -593,6 +618,60 @@ class Scheduler:
                 running.discard(current)
                 if not running:
                     self._running_tasks.pop(name, None)
+
+    async def _emit_run_finished(
+        self,
+        task: CronTask,
+        status: str,
+        attempt: int,
+        error_message: str | None,
+        run_id: int | None,
+        trace_id: str | None,
+        span_id: str | None,
+        trigger: str,
+    ) -> None:
+        """Fire `RunFinishedEvent` on error/cancel/recovery, never on a
+        routine success.
+
+        `task` is the object `_execute_task` was called with -- fetched
+        once per tick (`get_due_tasks`) or once per manual trigger
+        (`get_task` in `trigger_task`) and never refreshed mid-run -- so
+        `task.last_status` is the status *before* this run, exactly the
+        "previous status" the transition rule needs.
+        """
+        # Pop unconditionally (not only when we go on to emit) -- a manual
+        # trigger's stashed actor must not leak onto some later, unrelated
+        # run of the same task just because *this* run was a routine
+        # success that emits nothing.
+        actor_id = self._last_trigger_actor.pop(task.name, None)
+
+        previous = task.last_status
+        if status == "success" and previous not in ("error", "cancelled"):
+            return
+
+        actor = {"id": actor_id} if trigger == "manual" and actor_id else None
+
+        event = RunFinishedEvent(
+            actor=actor,
+            task_name=task.name,
+            handler=task.handler,
+            status=status,
+            attempt=attempt,
+            error_message=error_message,
+            run_id=run_id,
+            trace_id=trace_id,
+            span_id=span_id,
+        )
+        try:
+            await self.datasette.track_event(event)
+        except Exception:
+            # A buggy/raising consumer must never be able to mark a
+            # successful run as failed -- the DB writes already happened.
+            logger.exception(
+                "track_event consumer raised for RunFinishedEvent(task=%r, status=%r)",
+                task.name,
+                status,
+            )
 
     async def _compute_sleep(self) -> float:
         tasks = await self.internal_db.get_all_tasks()
